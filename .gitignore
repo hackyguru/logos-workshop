@@ -1,0 +1,9 @@
+# Nix build-artifact symlinks at workshop root
+lm
+logos
+pm
+result
+result-*
+
+# Editor/OS junk
+.DS_Store

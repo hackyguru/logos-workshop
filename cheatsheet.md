@@ -302,8 +302,127 @@ auto result = logosAPI->callModule("other_module", "someMethod",
 | `logoscore call` hangs                     | Daemon not running, or pointing at a different modules dir.                     |
 | First build takes forever                  | Normal. Qt + SDK is ~2–3 GB. Nix caches everything after.                       |
 
-## Messaging (Part 3 — pending)
+## Calling another core module (`delivery_module` example)
+
+Pattern for any cross-module RPC — `getClient` → `invokeRemoteMethod` →
+`requestObject` + `onEvent` for signals.
+
+```cpp
+#include "logos_api_client.h"
+#include "logos_object.h"
+
+// Members:
+LogosAPIClient* m_deliveryClient = nullptr;
+LogosObject*    m_deliveryObject = nullptr;   // NOT QObject* — type mismatch
+
+void Plugin::initLogos(LogosAPI* api) { logosAPI = api; }
+
+void Plugin::wireUp() {
+    m_deliveryClient = logosAPI->getClient("delivery_module");
+
+    // Synchronous RPC. Returns QVariant — check .isValid() + .toBool().
+    m_deliveryClient->invokeRemoteMethod("delivery_module", "createNode", cfgJson);
+
+    // Register event handlers BEFORE start() — events fire during start
+    m_deliveryObject = m_deliveryClient->requestObject("delivery_module");
+    m_deliveryClient->onEvent(m_deliveryObject, "messageReceived",
+        [this](const QString&, const QVariantList& data) { /* ... */ });
+
+    m_deliveryClient->invokeRemoteMethod("delivery_module", "start");
+    m_deliveryClient->invokeRemoteMethod("delivery_module", "subscribe", topic);
+
+    // Publish
+    m_deliveryClient->invokeRemoteMethod("delivery_module", "send", topic, payload);
+}
+```
+
+Flake + metadata glue:
+
+```nix
+# flake.nix
+inputs.delivery_module.url = "github:logos-co/logos-delivery-module";
+```
+
+```json
+// metadata.json
+"dependencies": ["delivery_module"]
+```
+
+## `delivery_module` event data layouts
 
 ```
-TODO: logos-messaging integration for the voting module
+messageReceived         [hash,     contentTopic, payload_base64, timestamp_ns]
+messageSent             [requestId, messageHash, timestamp]
+messagePropagated       [requestId, messageHash, timestamp]        // delivered to neighbors
+messageError            [requestId, messageHash, error,    timestamp]
+connectionStateChanged  [statusStr, timestamp]                      // "Connected" / "Connecting" / ...
+```
+
+`data[2]` on `messageReceived` is always base64 — single `QByteArray::fromBase64`
+gets your payload back. Content topic format: `/<app>/<ver>/<sub>/<json|proto>`.
+
+## `delivery_module` easy-mode config
+
+```json
+{ "logLevel": "INFO", "mode": "Core", "preset": "logos.dev" }
+```
+
+Preset = cluster 2, built-in bootstrap nodes, auto-sharded, mix enabled.
+Override individual keys alongside `preset` to change anything
+(`tcpPort`, `discv5UdpPort`, `logLevel`, `rlnRelay`, etc).
+
+## Running two Basecamps on one Mac (same-machine multi-peer demo)
+
+Ports collide (TCP 60000 + UDP 9000). Have your plugin read an env var:
+
+```cpp
+const int customPort = qEnvironmentVariableIntValue("VOTING_TCPPORT");
+if (customPort > 0) {
+    cfgObj["tcpPort"]       = customPort;
+    cfgObj["discv5UdpPort"] = 9000 + (customPort - 60000);  // keep them paired
+}
+```
+
+Launch two instances:
+
+```bash
+# A — defaults (60000 / 9000)
+nohup open -W -n "/path/to/Basecamp.app" \
+  --stdout /tmp/bc-A.log --stderr /tmp/bc-A.log > /dev/null 2>&1 &
+
+# B — overridden (60001 / 9001)
+nohup open -W -n "/path/to/Basecamp.app" \
+  --stdout /tmp/bc-B.log --stderr /tmp/bc-B.log \
+  --env VOTING_TCPPORT=60001 > /dev/null 2>&1 &
+```
+
+## Common delivery_module gotchas
+
+- **`requestObject` returns `LogosObject*`**, not `QObject*`. Include
+  `logos_object.h` or the compiler will reject `onEvent(m_obj, ...)`.
+- **Status race.** `connectionStateChanged` fires *during* `start()`, not
+  after. Set any "connecting" status BEFORE start, not after, or the event
+  handler's "Connected" update gets clobbered.
+- **Register event handlers BEFORE `start()`.** Events fired during start
+  get dropped if no handler is registered yet.
+- **Single base64 vs double base64.** Plain-JSON payloads need one
+  `fromBase64` on receive. Protobuf payloads that you base64-encoded
+  yourself on send need two.
+- **First build is slow.** `logos-delivery-module`'s source closure pulls
+  Nim + libp2p + zerokit + libpq. 15–30 min first time, seconds after.
+
+## Log capture for Basecamp on macOS
+
+```bash
+# Relaunch with captured stderr (fresh, won't lose lines on detach)
+pkill -9 -f "LogosBasecamp.bin"
+sleep 1
+nohup open -W -n "/path/to/Basecamp.app" \
+  --stdout /tmp/bc.log --stderr /tmp/bc.log > /dev/null 2>&1 &
+
+# Useful greps
+grep 'Calling method "' /tmp/bc.log                        # every RPC from QML
+grep 'DeliveryModulePlugin::' /tmp/bc.log                  # every delivery call
+grep 'eventType.*message_' /tmp/bc.log                     # send lifecycle
+grep 'dispatching event.*callback' /tmp/bc.log             # inbound events
 ```

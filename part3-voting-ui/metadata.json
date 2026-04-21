@@ -1,0 +1,24 @@
+{
+  "name": "voting_ui",
+  "version": "0.1.0",
+  "type": "ui_qml",
+  "category": "example",
+  "description": "Real-time polling UI — create and vote on yes/no polls",
+  "view": "Main.qml",
+  "icon": "icons/voting.png",
+  "dependencies": ["voting"],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}
