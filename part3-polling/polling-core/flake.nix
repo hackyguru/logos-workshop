@@ -1,5 +1,5 @@
 {
-  description = "Voting — real-time yes/no polls over logos-delivery";
+  description = "Polling — real-time yes/no polls over logos-delivery";
 
   inputs = {
     logos-module-builder.url = "github:logos-co/logos-module-builder";

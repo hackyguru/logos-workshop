@@ -36,10 +36,10 @@ self-contained tutorial.
   - [2.6 Drive it headlessly with `logoscore`](#26-drive-it-headlessly-with-logoscore)
   - [2.7 Install it into Basecamp](#27-install-it-into-basecamp)
   - [2.8 Making it persist — swap in SQLite](#28-making-it-persist--swap-in-sqlite)
-- [Part 3 — A Voting Module (with `logos-delivery`)](#part-3--a-voting-module-with-logos-delivery)
+- [Part 3 — A Polling Module (with `logos-delivery`)](#part-3--a-polling-module-with-logos-delivery)
   - [3.1 What we're building](#31-what-were-building)
   - [3.2 A tour of `delivery_module`](#32-a-tour-of-delivery_module)
-  - [3.3 Scaffold the voting core](#33-scaffold-the-voting-core)
+  - [3.3 Scaffold the polling core](#33-scaffold-the-polling-core)
   - [3.4 Design the interface](#34-design-the-interface)
   - [3.5 State and voter identity](#35-state-and-voter-identity)
   - [3.6 Wiring up `delivery_module`](#36-wiring-up-delivery_module)
@@ -49,7 +49,7 @@ self-contained tutorial.
   - [3.10 Build, install, smoke test](#310-build-install-smoke-test)
   - [3.11 Proving multi-peer via the log](#311-proving-multi-peer-via-the-log)
   - [3.12 Two instances on one machine](#312-two-instances-on-one-machine)
-  - [3.13 The voting UI](#313-the-voting-ui)
+  - [3.13 The polling UI](#313-the-polling-ui)
 - [Wrap-up](#wrap-up)
 - [Appendix — Troubleshooting](#appendix--troubleshooting)
 
@@ -129,7 +129,7 @@ UI or filesystem, it specifically means a `ui_qml*`-type module.
 | ---- | ------------- | -------- | --------------------------------------------------------- |
 | 1    | `hello_world` | `ui_qml` | A QML-only UI tab. Says hi, no backend.                   |
 | 2    | `todo`        | `core` + `ui_qml` | In-memory todo list with add / list / complete / remove, with a QML UI on top. |
-| 3    | `voting`      | `core` + `ui_qml` | Yes/no polls shared across peers via `logos-delivery` pub/sub. |
+| 3    | `polling`      | `core` + `ui_qml` | Yes/no polls shared across peers via `logos-delivery` pub/sub. |
 
 Each part ends with an `.lgx` package you install into Basecamp and actually
 see running. Core modules (Part 2 onwards) are C++; UI modules are QML-only,
@@ -1143,7 +1143,7 @@ to give us.
 
 ---
 
-## Part 3 — A Voting Module (with `logos-delivery`)
+## Part 3 — A Polling Module (with `logos-delivery`)
 
 Parts 1 and 2 were local — one machine, one user. Part 3 is where Logos
 earns the "modular distributed app" framing: we plug into `delivery_module`,
@@ -1154,7 +1154,7 @@ every Basecamp peer connected to the same network.
 
 ### 3.1 What we're building
 
-A voting module where:
+A polling module where:
 
 - Any user can **open a poll** by picking an id (`fruit-best-2026`) and
   typing a question.
@@ -1166,10 +1166,10 @@ A voting module where:
 
 No server. No database. The network *is* the state channel.
 
-We split the work exactly the way Part 2 did: **`voting`** is the core
-module (C++, owns the protocol), **`voting_ui`** is a QML plugin that
-renders it. The finished versions live in [`part3-voting/voting-core/`](../part3-voting/voting-core/)
-and [`part3-voting/voting-ui/`](../part3-voting/voting-ui/).
+We split the work exactly the way Part 2 did: **`polling`** is the core
+module (C++, owns the protocol), **`polling_ui`** is a QML plugin that
+renders it. The finished versions live in [`part3-polling/polling-core/`](../part3-polling/polling-core/)
+and [`part3-polling/polling-ui/`](../part3-polling/polling-ui/).
 
 ### 3.2 A tour of `delivery_module`
 
@@ -1219,7 +1219,7 @@ m_deliveryClient->invokeRemoteMethod("delivery_module", "send", topic, payload);
 /<app>/<version>/<subtopic>/<format>
 ```
 
-For our poll-per-topic design that becomes `/voting/1/poll-<id>/json`. A
+For our poll-per-topic design that becomes `/polling/1/poll-<id>/json`. A
 message on that topic is our JSON payload.
 
 **The easy mode config** — use the pre-shipped `logos.dev` preset and
@@ -1235,13 +1235,13 @@ override — `tcpPort`, `discv5UdpPort`, fleet, logLevel — you just add
 alongside the preset and it wins. (We'll use that later for two instances
 on one machine.)
 
-### 3.3 Scaffold the voting core
+### 3.3 Scaffold the polling core
 
 Same template as Part 2 — core module, C++ plugin:
 
 ```bash
 cd ~/logos-workshop
-mkdir voting && cd voting
+mkdir polling && cd polling
 nix flake init -t github:logos-co/logos-module-builder
 ```
 
@@ -1253,7 +1253,7 @@ loads `delivery_module` before loading us.
 
 ```nix
 {
-  description = "Voting — real-time yes/no polls over logos-delivery";
+  description = "Polling — real-time yes/no polls over logos-delivery";
 
   inputs = {
     logos-module-builder.url = "github:logos-co/logos-module-builder";
@@ -1271,11 +1271,11 @@ loads `delivery_module` before loading us.
 
 ```json
 {
-  "name": "voting",
+  "name": "polling",
   "version": "0.1.0",
   "type": "core",
   "description": "Real-time yes/no polling via logos-delivery",
-  "main": "voting_plugin",
+  "main": "polling_plugin",
   "dependencies": ["delivery_module"],
 
   "nix": { /* unchanged boilerplate */ }
@@ -1287,7 +1287,7 @@ loads `delivery_module` before loading us.
 > and `libpq` before your plugin even compiles. Budget 15–30 minutes for the
 > very first build. Every subsequent build is seconds.
 
-`CMakeLists.txt` stays minimal — same `logos_module(NAME voting SOURCES ...)`
+`CMakeLists.txt` stays minimal — same `logos_module(NAME polling SOURCES ...)`
 we used in Part 2. No `target_link_libraries` this time; we're not calling
 `delivery_module` as a C++ library, we're calling it through the SDK.
 
@@ -1296,17 +1296,17 @@ we used in Part 2. No `target_link_libraries` this time; we're not calling
 The method set that popped out of wiring this up:
 
 ```cpp
-// src/voting_interface.h
-class VotingInterface : public PluginInterface {
+// src/polling_interface.h
+class PollingInterface : public PluginInterface {
 public:
-    virtual ~VotingInterface() = default;
+    virtual ~PollingInterface() = default;
 
     // Delivery lifecycle — 0=off, 1=connecting, 2=connected, 3=error
     Q_INVOKABLE virtual bool    startDelivery() = 0;
     Q_INVOKABLE virtual bool    stopDelivery() = 0;
     Q_INVOKABLE virtual int     deliveryStatus() = 0;
 
-    // Polls — each poll is a content topic /voting/1/poll-<id>/json
+    // Polls — each poll is a content topic /polling/1/poll-<id>/json
     Q_INVOKABLE virtual bool    openPoll(const QString& pollId, const QString& question) = 0;
     Q_INVOKABLE virtual bool    closePoll(const QString& pollId) = 0;
     Q_INVOKABLE virtual bool    vote(const QString& pollId, bool yes) = 0;
@@ -1317,13 +1317,13 @@ public:
     Q_INVOKABLE virtual QString myVoterId() = 0;
 };
 
-#define VotingInterface_iid "org.logos.VotingInterface"
-Q_DECLARE_INTERFACE(VotingInterface, VotingInterface_iid)
+#define PollingInterface_iid "org.logos.PollingInterface"
+Q_DECLARE_INTERFACE(PollingInterface, PollingInterface_iid)
 ```
 
 A deliberate omission: no method to enumerate *all* polls on the network.
-The voting module only sees polls **we've joined** (subscribed to). Other
-peers could be voting on polls we know nothing about — that's the whole
+The polling module only sees polls **we've joined** (subscribed to). Other
+peers could be polling on polls we know nothing about — that's the whole
 point of pub/sub, it scales to any number of topics.
 
 ### 3.5 State and voter identity
@@ -1336,7 +1336,7 @@ struct PollState {
     QHash<QString, bool> votes;   // voterId → yes/no (latest wins)
 };
 
-// In VotingPlugin:
+// In PollingPlugin:
 QString                   m_voterId;
 QHash<QString, PollState> m_polls;
 ```
@@ -1349,7 +1349,7 @@ no-op, and flipping yes→no just overwrites their entry. Dedup falls out for
 free.
 
 ```cpp
-VotingPlugin::VotingPlugin(QObject* parent)
+PollingPlugin::PollingPlugin(QObject* parent)
     : QObject(parent)
     , m_voterId(QUuid::createUuid().toString(QUuid::WithoutBraces))
 {}
@@ -1361,7 +1361,7 @@ The full `startDelivery` sequence — this is the most interesting function
 in the file:
 
 ```cpp
-bool VotingPlugin::startDelivery()
+bool PollingPlugin::startDelivery()
 {
     if (m_started) return true;
 
@@ -1374,9 +1374,9 @@ bool VotingPlugin::startDelivery()
     cfgObj["logLevel"] = "INFO";
     cfgObj["mode"]     = "Core";
     cfgObj["preset"]   = "logos.dev";
-    // For same-machine two-instance demo: VOTING_TCPPORT=60001 env on the
+    // For same-machine two-instance demo: POLLING_TCPPORT=60001 env on the
     // second launch — see §3.12.
-    const int customPort = qEnvironmentVariableIntValue("VOTING_TCPPORT");
+    const int customPort = qEnvironmentVariableIntValue("POLLING_TCPPORT");
     if (customPort > 0) {
         cfgObj["tcpPort"]       = customPort;
         cfgObj["discv5UdpPort"] = 9000 + (customPort - 60000);
@@ -1433,7 +1433,7 @@ Five things worth internalising:
 4. **The config lives in `metadata.json`'s sibling module — not yours.**
    You don't link `delivery_module`; you call it. Whatever version of
    `delivery_module` Basecamp has installed is what you talk to.
-5. **The `VOTING_TCPPORT` env var override** is there purely so two
+5. **The `POLLING_TCPPORT` env var override** is there purely so two
    Basecamp instances can run on the same Mac for the demo in §3.12. On
    your attendees' machines it's irrelevant — they leave it unset.
 
@@ -1483,14 +1483,14 @@ The rest is straightforward — three methods, each a thin wrapper over a
 single `delivery_module` call.
 
 ```cpp
-static const QString TOPIC_PREFIX = "/voting/1/poll-";
+static const QString TOPIC_PREFIX = "/polling/1/poll-";
 static const QString TOPIC_SUFFIX = "/json";
 
-QString VotingPlugin::topicFor(const QString& pollId) const {
+QString PollingPlugin::topicFor(const QString& pollId) const {
     return TOPIC_PREFIX + pollId + TOPIC_SUFFIX;
 }
 
-bool VotingPlugin::openPoll(const QString& pollId, const QString& question)
+bool PollingPlugin::openPoll(const QString& pollId, const QString& question)
 {
     if (pollId.isEmpty()) return false;
     if (!m_started && !startDelivery()) return false;
@@ -1510,7 +1510,7 @@ bool VotingPlugin::openPoll(const QString& pollId, const QString& question)
     return true;
 }
 
-bool VotingPlugin::vote(const QString& pollId, bool yes)
+bool PollingPlugin::vote(const QString& pollId, bool yes)
 {
     if (!m_polls.contains(pollId) || !m_started) return false;
 
@@ -1540,7 +1540,7 @@ parses the `messageReceived` event back into a vote and updates
 `m_polls`:
 
 ```cpp
-void VotingPlugin::handleMessageReceived(const QVariantList& data)
+void PollingPlugin::handleMessageReceived(const QVariantList& data)
 {
     // messageReceived: [hash, contentTopic, payload_base64, timestamp]
     if (data.size() < 3) return;
@@ -1582,24 +1582,24 @@ whose pollId is in our `m_polls`. Anything else gets silently ignored.
 Same dev loop as Parts 1 and 2:
 
 ```bash
-cd ~/logos-workshop/voting
+cd ~/logos-workshop/polling
 git init -q && git add -A && nix flake update && git add flake.lock
 nix build '.#lgx-portable' --out-link result-portable
 
 BASECAMP_DIR="$HOME/Library/Application Support/Logos/LogosBasecamp"
-mkdir -p "$BASECAMP_DIR/modules/voting" /tmp/voting-lgx
-tar xzf result-portable/*.lgx -C /tmp/voting-lgx
-cp /tmp/voting-lgx/variants/darwin-arm64/voting_plugin.dylib "$BASECAMP_DIR/modules/voting/"
-cp /tmp/voting-lgx/manifest.json                              "$BASECAMP_DIR/modules/voting/"
-echo "darwin-arm64" >                                          "$BASECAMP_DIR/modules/voting/variant"
+mkdir -p "$BASECAMP_DIR/modules/polling" /tmp/polling-lgx
+tar xzf result-portable/*.lgx -C /tmp/polling-lgx
+cp /tmp/polling-lgx/variants/darwin-arm64/polling_plugin.dylib "$BASECAMP_DIR/modules/polling/"
+cp /tmp/polling-lgx/manifest.json                              "$BASECAMP_DIR/modules/polling/"
+echo "darwin-arm64" >                                          "$BASECAMP_DIR/modules/polling/variant"
 ```
 
-Do the same for `voting_ui` (we'll see its code in §3.13). Restart Basecamp
+Do the same for `polling_ui` (we'll see its code in §3.13). Restart Basecamp
 with ⌘Q + relaunch.
 
 **Solo smoke test:**
 
-1. Open **voting_ui** → click **Start** → wait for "Connected" (5–10s).
+1. Open **polling_ui** → click **Start** → wait for "Connected" (5–10s).
 2. Type a poll id (or click **Random**) and a question. Click **Open / Join**.
 3. Click **Vote Yes**. Yes count goes 0→1. Click again — stays at 1
    (voter dedup working). Click **Vote No** — flips you.
@@ -1633,7 +1633,7 @@ grep -E 'DeliveryModulePlugin::(send|subscribe)|eventType.*message_(sent|propaga
 
 You should see, in order:
 
-- `DeliveryModulePlugin::subscribe called with contentTopic: "/voting/1/poll-.../json"`
+- `DeliveryModulePlugin::subscribe called with contentTopic: "/polling/1/poll-.../json"`
 - `DeliveryModulePlugin::send called ... payload: {"voter":"...","yes":true}`
 - `event_callback message: {"eventType":"message_received", ...}` — the
   fleet echoed our own message back
@@ -1652,18 +1652,18 @@ For the live demo, you want to show two voters interacting — but two
 Basecamps on one Mac can't both bind port 60000 (the `logos.dev` preset's
 default P2P TCP port) or UDP port 9000 (discv5).
 
-Our plugin already handles this: set `VOTING_TCPPORT` on the second launch
+Our plugin already handles this: set `POLLING_TCPPORT` on the second launch
 and the plugin picks both a new TCP port **and** a derived UDP port:
 
 ```cpp
-const int customPort = qEnvironmentVariableIntValue("VOTING_TCPPORT");
+const int customPort = qEnvironmentVariableIntValue("POLLING_TCPPORT");
 if (customPort > 0) {
     cfgObj["tcpPort"]       = customPort;
     cfgObj["discv5UdpPort"] = 9000 + (customPort - 60000);
 }
 ```
 
-So `VOTING_TCPPORT=60001` puts the second instance on `tcpPort 60001` and
+So `POLLING_TCPPORT=60001` puts the second instance on `tcpPort 60001` and
 `discv5UdpPort 9001` — no collision.
 
 **Launching both:**
@@ -1678,7 +1678,7 @@ sleep 2
 # Instance B — override ports via open's --env flag
 nohup open -W -n "/Users/guru/Desktop/LogosBasecamp.app" \
   --stdout /tmp/bc-B.log --stderr /tmp/bc-B.log \
-  --env VOTING_TCPPORT=60001 > /dev/null 2>&1 &
+  --env POLLING_TCPPORT=60001 > /dev/null 2>&1 &
 ```
 
 Click Start in both. Both should reach "Connected". Open the **same poll
@@ -1690,14 +1690,14 @@ dedup stays correct when you have a mix of local and remote votes.
 
 > **Caveats of running two Basecamps on one machine.** They share the same
 > `~/Library/Application Support/Logos/LogosBasecamp/` data directory.
-> Voting state is in-memory so it doesn't collide, but other core modules
+> Polling state is in-memory so it doesn't collide, but other core modules
 > that persist to disk (e.g. the todo module from Part 2) might. For a live
-> demo that's limited to voting, this is fine. For serious development
+> demo that's limited to polling, this is fine. For serious development
 > you'd want a second data dir.
 
-### 3.13 The voting UI
+### 3.13 The polling UI
 
-The QML plugin (`voting_ui`, type `ui_qml`) is about 200 lines of
+The QML plugin (`polling_ui`, type `ui_qml`) is about 200 lines of
 `Main.qml`. It:
 
 - Reads `deliveryStatus()` and shows a coloured status dot.
@@ -1710,21 +1710,21 @@ The QML plugin (`voting_ui`, type `ui_qml`) is about 200 lines of
 The interesting bits — everything else is standard QML:
 
 ```qml
-function callVoting(method, args) {
+function callPolling(method, args) {
     if (typeof logos === "undefined" || !logos.callModule) return null
-    return logos.callModule("voting", method, args)
+    return logos.callModule("polling", method, args)
 }
 
 function refresh() {
-    deliveryStatus = callVoting("deliveryStatus", []) || 0
-    if (voterId === "") voterId = callVoting("myVoterId", []) || ""
-    const json = callVoting("listPolls", [])
+    deliveryStatus = callPolling("deliveryStatus", []) || 0
+    if (voterId === "") voterId = callPolling("myVoterId", []) || ""
+    const json = callPolling("listPolls", [])
     try { polls = JSON.parse(json) } catch (e) { polls = [] }
 }
 
 Button {
     text: "Vote Yes"
-    onClicked: { callVoting("vote", [modelData.id, true]); refresh() }
+    onClicked: { callPolling("vote", [modelData.id, true]); refresh() }
 }
 
 Timer {
@@ -1736,30 +1736,30 @@ Timer {
 ```
 
 The polling loop is deliberately simple. A tighter UI would use
-`logos.onModuleEvent("voting", "voteReceived", cb)` to update only on new
+`logos.onModuleEvent("polling", "voteReceived", cb)` to update only on new
 events — try it as a follow-up exercise. For a workshop demo where the
 audience wants to see votes land, 1.5s polling is plenty.
 
-The `metadata.json` declares `"dependencies": ["voting"]` — Basecamp loads
-our core module before this plugin, so `logos.callModule("voting", ...)`
+The `metadata.json` declares `"dependencies": ["polling"]` — Basecamp loads
+our core module before this plugin, so `logos.callModule("polling", ...)`
 resolves correctly.
 
 Build and install exactly like Part 2's `todo_ui`:
 
 ```bash
-cd ~/logos-workshop/voting_ui
+cd ~/logos-workshop/polling_ui
 git init -q && git add -A
 nix flake update && git add flake.lock
-nix build --override-input voting path:../voting '.#lgx-portable' --out-link result-portable
+nix build --override-input polling path:../polling-core '.#lgx-portable' --out-link result-portable
 
-mkdir -p "$BASECAMP_DIR/plugins/voting_ui" /tmp/voting-ui-lgx
-tar xzf result-portable/*.lgx -C /tmp/voting-ui-lgx
-cp /tmp/voting-ui-lgx/variants/darwin-arm64/Main.qml /tmp/voting-ui-lgx/variants/darwin-arm64/voting.png /tmp/voting-ui-lgx/variants/darwin-arm64/metadata.json "$BASECAMP_DIR/plugins/voting_ui/"
-cp /tmp/voting-ui-lgx/manifest.json "$BASECAMP_DIR/plugins/voting_ui/"
-echo "darwin-arm64" > "$BASECAMP_DIR/plugins/voting_ui/variant"
+mkdir -p "$BASECAMP_DIR/plugins/polling_ui" /tmp/polling-ui-lgx
+tar xzf result-portable/*.lgx -C /tmp/polling-ui-lgx
+cp /tmp/polling-ui-lgx/variants/darwin-arm64/Main.qml /tmp/polling-ui-lgx/variants/darwin-arm64/polling.png /tmp/polling-ui-lgx/variants/darwin-arm64/metadata.json "$BASECAMP_DIR/plugins/polling_ui/"
+cp /tmp/polling-ui-lgx/manifest.json "$BASECAMP_DIR/plugins/polling_ui/"
+echo "darwin-arm64" > "$BASECAMP_DIR/plugins/polling_ui/variant"
 ```
 
-Restart Basecamp, click Start on the voting_ui tab, and you're running a
+Restart Basecamp, click Start on the polling_ui tab, and you're running a
 peer on the real logos.dev network.
 
 ---

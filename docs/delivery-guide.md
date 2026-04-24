@@ -69,7 +69,7 @@ Everything below it is the library's job.
 ## Minimum viable integration
 
 The smallest usable integration has **seven steps**. Copy this as a
-starting point, rename "voting" to your module name.
+starting point, rename "polling" to your module name.
 
 ### 1. Declare the dependency
 
@@ -306,7 +306,7 @@ Real-world examples from the Logos ecosystem:
 | `/simplechat/1/messages/json` | simplechat |
 | `/tictactoe/1/moves/proto` | tictactoe core (C++ UI path) |
 | `/tictactoe/1/moves/json` | tictactoe core (QML UI path) |
-| `/voting/1/poll-<id>/json` | voting (the one we built) |
+| `/polling/1/poll-<id>/json` | polling (the one we built) |
 
 **Guidelines:**
 
@@ -390,7 +390,7 @@ void MyPlugin::handleMessage(const QVariantList& data) {
 ### Pattern: "dedup by sender id, latest wins"
 
 If the same sender can legitimately send multiple messages but you only
-want the most recent one counted (the voting module does this for "change
+want the most recent one counted (the polling module does this for "change
 your vote"), key state by sender id:
 
 ```cpp
@@ -625,7 +625,7 @@ processes, including the `logos_host` that runs your module.
 ## References
 
 - **This guide's companion documents** (in this repo):
-  - [workshop.md](workshop.md) — walks through building a voting module
+  - [workshop.md](workshop.md) — walks through building a polling module
     from scratch (Part 3)
   - [cheatsheet.md](cheatsheet.md) — condensed command reference
 

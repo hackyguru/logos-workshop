@@ -1,10 +1,10 @@
 {
-  "name": "voting",
+  "name": "polling",
   "version": "0.1.0",
   "type": "core",
   "category": "example",
   "description": "Real-time yes/no polling via logos-delivery",
-  "main": "voting_plugin",
+  "main": "polling_plugin",
   "dependencies": ["delivery_module"],
 
   "nix": {

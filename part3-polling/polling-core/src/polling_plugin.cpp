@@ -1,4 +1,4 @@
-#include "voting_plugin.h"
+#include "polling_plugin.h"
 #include "logos_api.h"
 #include "logos_api_client.h"
 #include "logos_object.h"
@@ -13,27 +13,27 @@
 
 // Content-topic format: /<app>/<version>/<subtopic>/<format>
 // See https://lip.logos.co/messaging/informational/23/topics.html#content-topics
-static const QString TOPIC_PREFIX = "/voting/1/poll-";
+static const QString TOPIC_PREFIX = "/polling/1/poll-";
 static const QString TOPIC_SUFFIX = "/json";
 
-VotingPlugin::VotingPlugin(QObject* parent)
+PollingPlugin::PollingPlugin(QObject* parent)
     : QObject(parent)
     , m_voterId(QUuid::createUuid().toString(QUuid::WithoutBraces))
 {
-    qDebug() << "VotingPlugin: created, voterId =" << m_voterId;
+    qDebug() << "PollingPlugin: created, voterId =" << m_voterId;
 }
 
-VotingPlugin::~VotingPlugin() = default;
+PollingPlugin::~PollingPlugin() = default;
 
-void VotingPlugin::initLogos(LogosAPI* api)
+void PollingPlugin::initLogos(LogosAPI* api)
 {
     logosAPI = api;
-    qDebug() << "VotingPlugin: LogosAPI wired up";
+    qDebug() << "PollingPlugin: LogosAPI wired up";
 }
 
 // ── Delivery lifecycle ───────────────────────────────────────────────
 
-bool VotingPlugin::startDelivery()
+bool PollingPlugin::startDelivery()
 {
     if (m_started) return true;
 
@@ -44,21 +44,21 @@ bool VotingPlugin::startDelivery()
 
     m_deliveryClient = logosAPI->getClient("delivery_module");
     if (!m_deliveryClient) {
-        qWarning() << "VotingPlugin: delivery_module client unavailable";
+        qWarning() << "PollingPlugin: delivery_module client unavailable";
         setDeliveryStatus(3);
         return false;
     }
 
     // logos.dev preset = cluster 2, built-in bootstrap nodes, auto-sharded.
     // See DeliveryModulePlugin::createNode docstring in logos-co/logos-delivery-module.
-    // For running two Basecamps on one machine, set VOTING_TCPPORT=60001 (or
+    // For running two Basecamps on one machine, set POLLING_TCPPORT=60001 (or
     // any free port) on the second instance to avoid the 60000 port clash.
     // Individual config keys override the preset's defaults.
     QJsonObject cfgObj;
     cfgObj["logLevel"] = "INFO";
     cfgObj["mode"]     = "Core";
     cfgObj["preset"]   = "logos.dev";
-    const int customPort = qEnvironmentVariableIntValue("VOTING_TCPPORT");
+    const int customPort = qEnvironmentVariableIntValue("POLLING_TCPPORT");
     if (customPort > 0) {
         cfgObj["tcpPort"]       = customPort;
         // discv5 uses its own UDP port (default 9000). Auto-derive a unique one
@@ -66,9 +66,9 @@ bool VotingPlugin::startDelivery()
         // 60001 → 9001, 60002 → 9002, etc.
         const int udpPort = 9000 + (customPort - 60000);
         cfgObj["discv5UdpPort"] = udpPort;
-        qDebug() << "VotingPlugin: using custom tcpPort" << customPort
+        qDebug() << "PollingPlugin: using custom tcpPort" << customPort
                  << "and discv5UdpPort" << udpPort
-                 << "(from VOTING_TCPPORT env)";
+                 << "(from POLLING_TCPPORT env)";
     }
     const QString cfg = QString::fromUtf8(
         QJsonDocument(cfgObj).toJson(QJsonDocument::Compact));
@@ -103,10 +103,10 @@ bool VotingPlugin::startDelivery()
 
         m_deliveryClient->onEvent(m_deliveryObject, "messageError",
             [](const QString&, const QVariantList& data) {
-                if (data.size() >= 3) qWarning() << "voting: delivery send error:" << data[2];
+                if (data.size() >= 3) qWarning() << "polling: delivery send error:" << data[2];
             });
     } else {
-        qWarning() << "VotingPlugin: no delivery_module object — events will be missed";
+        qWarning() << "PollingPlugin: no delivery_module object — events will be missed";
     }
 
     if (!invokeBool("start", "start")) {
@@ -119,7 +119,7 @@ bool VotingPlugin::startDelivery()
     return true;
 }
 
-bool VotingPlugin::stopDelivery()
+bool PollingPlugin::stopDelivery()
 {
     if (!m_started) return true;
 
@@ -137,11 +137,11 @@ bool VotingPlugin::stopDelivery()
     return true;
 }
 
-int VotingPlugin::deliveryStatus() { return m_deliveryStatus; }
+int PollingPlugin::deliveryStatus() { return m_deliveryStatus; }
 
 // ── Polls ────────────────────────────────────────────────────────────
 
-bool VotingPlugin::openPoll(const QString& pollId, const QString& question)
+bool PollingPlugin::openPoll(const QString& pollId, const QString& question)
 {
     if (pollId.isEmpty()) return false;
     if (!m_started && !startDelivery()) return false;
@@ -159,7 +159,7 @@ bool VotingPlugin::openPoll(const QString& pollId, const QString& question)
         return false;
     }
 
-    qDebug() << "VotingPlugin: opened poll" << pollId << "topic" << topicFor(pollId);
+    qDebug() << "PollingPlugin: opened poll" << pollId << "topic" << topicFor(pollId);
     emit eventResponse("pollOpened", QVariantList{ pollId, question });
 
     // Request/announce on open:
@@ -182,7 +182,7 @@ bool VotingPlugin::openPoll(const QString& pollId, const QString& question)
     return true;
 }
 
-bool VotingPlugin::closePoll(const QString& pollId)
+bool PollingPlugin::closePoll(const QString& pollId)
 {
     if (!m_polls.contains(pollId)) return false;
 
@@ -194,7 +194,7 @@ bool VotingPlugin::closePoll(const QString& pollId)
     return true;
 }
 
-bool VotingPlugin::vote(const QString& pollId, bool yes)
+bool PollingPlugin::vote(const QString& pollId, bool yes)
 {
     if (!m_polls.contains(pollId)) return false;
     if (!m_started) return false;
@@ -218,7 +218,7 @@ bool VotingPlugin::vote(const QString& pollId, bool yes)
     const QVariant r = m_deliveryClient->invokeRemoteMethod(
         "delivery_module", "send", topicFor(pollId), payload);
     if (!r.isValid()) {
-        qWarning() << "VotingPlugin: delivery_module.send RPC failed";
+        qWarning() << "PollingPlugin: delivery_module.send RPC failed";
         return false;
     }
     return true;
@@ -226,7 +226,7 @@ bool VotingPlugin::vote(const QString& pollId, bool yes)
 
 // ── Query helpers ────────────────────────────────────────────────────
 
-QString VotingPlugin::listPolls()
+QString PollingPlugin::listPolls()
 {
     QJsonArray arr;
     for (auto it = m_polls.constBegin(); it != m_polls.constEnd(); ++it) {
@@ -248,7 +248,7 @@ QString VotingPlugin::listPolls()
     return QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact));
 }
 
-QString VotingPlugin::tally(const QString& pollId)
+QString PollingPlugin::tally(const QString& pollId)
 {
     QJsonObject o;
     o["id"] = pollId;
@@ -266,23 +266,23 @@ QString VotingPlugin::tally(const QString& pollId)
     return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
 }
 
-QString VotingPlugin::myVoterId() { return m_voterId; }
+QString PollingPlugin::myVoterId() { return m_voterId; }
 
 // ── Private helpers ──────────────────────────────────────────────────
 
-QString VotingPlugin::topicFor(const QString& pollId) const
+QString PollingPlugin::topicFor(const QString& pollId) const
 {
     return TOPIC_PREFIX + pollId + TOPIC_SUFFIX;
 }
 
-QString VotingPlugin::pollIdFromTopic(const QString& topic) const
+QString PollingPlugin::pollIdFromTopic(const QString& topic) const
 {
     if (!topic.startsWith(TOPIC_PREFIX) || !topic.endsWith(TOPIC_SUFFIX)) return QString();
     return topic.mid(TOPIC_PREFIX.size(),
                      topic.size() - TOPIC_PREFIX.size() - TOPIC_SUFFIX.size());
 }
 
-void VotingPlugin::handleMessageReceived(const QVariantList& data)
+void PollingPlugin::handleMessageReceived(const QVariantList& data)
 {
     // delivery_module.messageReceived layout:
     //   data[0] QString — message hash
@@ -290,7 +290,7 @@ void VotingPlugin::handleMessageReceived(const QVariantList& data)
     //   data[2] QString — payload (base64)
     //   data[3] QString — timestamp (ns since epoch)
     if (data.size() < 3) {
-        qWarning() << "VotingPlugin: messageReceived payload too short:" << data.size();
+        qWarning() << "PollingPlugin: messageReceived payload too short:" << data.size();
         return;
     }
 
@@ -305,7 +305,7 @@ void VotingPlugin::handleMessageReceived(const QVariantList& data)
     QJsonParseError err{};
     const QJsonDocument doc = QJsonDocument::fromJson(payload, &err);
     if (err.error != QJsonParseError::NoError || !doc.isObject()) {
-        qWarning() << "VotingPlugin: invalid JSON payload:" << payload;
+        qWarning() << "PollingPlugin: invalid JSON payload:" << payload;
         return;
     }
     const QJsonObject obj  = doc.object();
@@ -354,14 +354,14 @@ void VotingPlugin::handleMessageReceived(const QVariantList& data)
     emit eventResponse("voteReceived", QVariantList{ pollId, voter, yes });
 }
 
-void VotingPlugin::setDeliveryStatus(int status)
+void PollingPlugin::setDeliveryStatus(int status)
 {
     if (m_deliveryStatus == status) return;
     m_deliveryStatus = status;
     emit eventResponse("deliveryStatusChanged", QVariantList{ status });
 }
 
-bool VotingPlugin::invokeBool(const char* what,
+bool PollingPlugin::invokeBool(const char* what,
                               const QString& method,
                               const QVariant& arg)
 {
@@ -369,11 +369,11 @@ bool VotingPlugin::invokeBool(const char* what,
         ? m_deliveryClient->invokeRemoteMethod("delivery_module", method, arg)
         : m_deliveryClient->invokeRemoteMethod("delivery_module", method);
     if (!r.isValid()) {
-        qWarning() << "VotingPlugin:" << what << "RPC failed (invalid QVariant)";
+        qWarning() << "PollingPlugin:" << what << "RPC failed (invalid QVariant)";
         return false;
     }
     if (!r.toBool()) {
-        qWarning() << "VotingPlugin:" << what << "returned false:" << r;
+        qWarning() << "PollingPlugin:" << what << "returned false:" << r;
         return false;
     }
     return true;

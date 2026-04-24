@@ -15,7 +15,16 @@
       "Bash(rm -rf '__TRACKED_VAR__/Library/Application Support/logos_host/filesharing-storage')",
       "Bash(rm -f /tmp/basecamp-live.log)",
       "Bash(./LogosBasecamp.bin)",
-      "Bash(echo \"Basecamp PID $!\")"
+      "Bash(echo \"Basecamp PID $!\")",
+      "Bash(set -e)",
+      "Bash(git mv *)",
+      "Bash(set -e pkill -9 -f \"LogosBasecamp.bin\")",
+      "Bash(rm -rf /tmp/polling-core-inst)",
+      "Bash(mkdir -p /tmp/polling-core-inst)",
+      "Bash(cp part3-polling/polling-core/result-portable/*.lgx /tmp/polling-core-inst/core.lgx.gz)",
+      "Bash(gunzip -f /tmp/polling-core-inst/core.lgx.gz)",
+      "Bash(mkdir -p __TRACKED_VAR__/polling)",
+      "Bash(echo \"PID $!\")"
     ]
   }
 }

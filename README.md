@@ -31,9 +31,9 @@ Part 4 pulls `logos-storage-module` (libstorage, also Nim) the first time — si
 ├── part2-todo/
 │   ├── todo-core/                # Todo backend (C++, Qt SQL / SQLite)
 │   └── todo-ui/                  # Todo UI (QML)
-├── part3-voting/
-│   ├── voting-core/              # Voting backend (C++, integrates delivery_module)
-│   └── voting-ui/                # Voting UI (QML)
+├── part3-polling/
+│   ├── polling-core/              # Polling backend (C++, integrates delivery_module)
+│   └── polling-ui/                # Polling UI (QML)
 └── part4-filesharing/
     ├── filesharing-core/         # File sharing backend (C++, integrates storage_module)
     └── filesharing-ui/           # File sharing UI (QML)
@@ -57,8 +57,8 @@ UI modules that depend on a sibling core need to override the input path at buil
 # e.g. from part2-todo/todo-ui
 nix build --override-input todo path:../todo-core '.#lgx-portable' --out-link result-portable
 
-# e.g. from part3-voting/voting-ui
-nix build --override-input voting path:../voting-core '.#lgx-portable' --out-link result-portable
+# e.g. from part3-polling/polling-ui
+nix build --override-input polling path:../polling-core '.#lgx-portable' --out-link result-portable
 
 # e.g. from part4-filesharing/filesharing-ui
 nix build --override-input filesharing path:../filesharing-core '.#lgx-portable' --out-link result-portable
@@ -83,17 +83,17 @@ Produced `.lgx` file is at `result-portable/*.lgx`. Import it from Basecamp's **
 
 **Run one Basecamp, import an `.lgx` via the UI** — simplest path.
 
-**Run multiple Basecamps on one machine** (useful when demonstrating peer-to-peer voting without a second device). Only `delivery_module`'s P2P ports collide between instances, so our voting core reads a `VOTING_TCPPORT` env var and auto-derives a paired UDP port:
+**Run multiple Basecamps on one machine** (useful when demonstrating peer-to-peer polling without a second device). Only `delivery_module`'s P2P ports collide between instances, so our polling core reads a `POLLING_TCPPORT` env var and auto-derives a paired UDP port:
 
 ```bash
 # Instance A — default ports (60000 TCP / 9000 UDP)
 open -n "/Applications/LogosBasecamp.app"
 
 # Instance B — override ports so both can run (60001 TCP / 9001 UDP)
-open -n "/Applications/LogosBasecamp.app" --env VOTING_TCPPORT=60001
+open -n "/Applications/LogosBasecamp.app" --env POLLING_TCPPORT=60001
 
 # Instance C (if needed)
-open -n "/Applications/LogosBasecamp.app" --env VOTING_TCPPORT=60002
+open -n "/Applications/LogosBasecamp.app" --env POLLING_TCPPORT=60002
 ```
 
 Adjust the `.app` path to wherever your copy of Basecamp lives. `open -n` forces a new instance (macOS normally single-instances apps on second launch); `--env` passes env vars into the launched bundle. Regular shell `VAR=value open …` does not work here because `open` goes through launchservices.

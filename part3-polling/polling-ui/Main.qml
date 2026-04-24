@@ -13,18 +13,18 @@ Item {
 
     // ── Logos bridge helpers ─────────────────────────────────────────
 
-    function callVoting(method, args) {
+    function callPolling(method, args) {
         if (typeof logos === "undefined" || !logos.callModule) {
             console.log("logos bridge unavailable")
             return null
         }
-        return logos.callModule("voting", method, args)
+        return logos.callModule("polling", method, args)
     }
 
     function refresh() {
-        deliveryStatus = callVoting("deliveryStatus", []) || 0
-        if (voterId === "") voterId = callVoting("myVoterId", []) || ""
-        const json = callVoting("listPolls", [])
+        deliveryStatus = callPolling("deliveryStatus", []) || 0
+        if (voterId === "") voterId = callPolling("myVoterId", []) || ""
+        const json = callPolling("listPolls", [])
         try { polls = JSON.parse(json) } catch (e) { polls = [] }
     }
 
@@ -59,7 +59,7 @@ Item {
             spacing: 10
 
             Text {
-                text: "Voting"
+                text: "Polling"
                 font.pixelSize: 24
                 font.weight: Font.DemiBold
                 Layout.fillWidth: true
@@ -76,8 +76,8 @@ Item {
             Button {
                 text: deliveryStatus === 0 ? "Start" : "Stop"
                 onClicked: {
-                    if (deliveryStatus === 0) callVoting("startDelivery", [])
-                    else                      callVoting("stopDelivery",  [])
+                    if (deliveryStatus === 0) callPolling("startDelivery", [])
+                    else                      callPolling("stopDelivery",  [])
                     refresh()
                 }
             }
@@ -184,17 +184,17 @@ Item {
                             Layout.fillWidth: true
                             text: "Vote Yes"
                             highlighted: modelData.myVote === "yes"
-                            onClicked: { callVoting("vote", [modelData.id, true]); refresh() }
+                            onClicked: { callPolling("vote", [modelData.id, true]); refresh() }
                         }
                         Button {
                             Layout.fillWidth: true
                             text: "Vote No"
                             highlighted: modelData.myVote === "no"
-                            onClicked: { callVoting("vote", [modelData.id, false]); refresh() }
+                            onClicked: { callPolling("vote", [modelData.id, false]); refresh() }
                         }
                         Button {
                             text: "Close"
-                            onClicked: { callVoting("closePoll", [modelData.id]); refresh() }
+                            onClicked: { callPolling("closePoll", [modelData.id]); refresh() }
                         }
                     }
                 }
@@ -291,7 +291,7 @@ Item {
                         if (id.length === 0) return
                         const q  = formCard.mode === "create"
                                    ? questionField.text.trim() : ""
-                        callVoting("openPoll", [id, q])
+                        callPolling("openPoll", [id, q])
                         pollIdField.text = ""
                         questionField.text = ""
                         refresh()
@@ -302,7 +302,7 @@ Item {
     }
 
     // Poll every 1.5s for a simple live tally. A real app would subscribe to the
-    // voting module's voteReceived events via logos.onModuleEvent(...).
+    // polling module's voteReceived events via logos.onModuleEvent(...).
     Timer {
         interval: 1500
         running: true

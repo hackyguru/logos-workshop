@@ -1,11 +1,11 @@
-#ifndef VOTING_PLUGIN_H
-#define VOTING_PLUGIN_H
+#ifndef POLLING_PLUGIN_H
+#define POLLING_PLUGIN_H
 
 #include <QObject>
 #include <QString>
 #include <QHash>
 #include <QVariant>
-#include "voting_interface.h"
+#include "polling_interface.h"
 #include "logos_api.h"
 #include "logos_api_client.h"
 #include "logos_object.h"
@@ -16,17 +16,17 @@ struct PollState {
     QHash<QString, bool> votes;   // voterId -> yes/no (latest wins)
 };
 
-class VotingPlugin : public QObject, public VotingInterface
+class PollingPlugin : public QObject, public PollingInterface
 {
     Q_OBJECT
-    Q_PLUGIN_METADATA(IID VotingInterface_iid FILE "metadata.json")
-    Q_INTERFACES(VotingInterface PluginInterface)
+    Q_PLUGIN_METADATA(IID PollingInterface_iid FILE "metadata.json")
+    Q_INTERFACES(PollingInterface PluginInterface)
 
 public:
-    explicit VotingPlugin(QObject* parent = nullptr);
-    ~VotingPlugin() override;
+    explicit PollingPlugin(QObject* parent = nullptr);
+    ~PollingPlugin() override;
 
-    QString name() const override { return "voting"; }
+    QString name() const override { return "polling"; }
     QString version() const override { return "0.1.0"; }
 
     Q_INVOKABLE void initLogos(LogosAPI* api);

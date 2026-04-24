@@ -376,7 +376,7 @@ Override individual keys alongside `preset` to change anything
 Ports collide (TCP 60000 + UDP 9000). Have your plugin read an env var:
 
 ```cpp
-const int customPort = qEnvironmentVariableIntValue("VOTING_TCPPORT");
+const int customPort = qEnvironmentVariableIntValue("POLLING_TCPPORT");
 if (customPort > 0) {
     cfgObj["tcpPort"]       = customPort;
     cfgObj["discv5UdpPort"] = 9000 + (customPort - 60000);  // keep them paired
@@ -393,7 +393,7 @@ nohup open -W -n "/path/to/Basecamp.app" \
 # B — overridden (60001 / 9001)
 nohup open -W -n "/path/to/Basecamp.app" \
   --stdout /tmp/bc-B.log --stderr /tmp/bc-B.log \
-  --env VOTING_TCPPORT=60001 > /dev/null 2>&1 &
+  --env POLLING_TCPPORT=60001 > /dev/null 2>&1 &
 ```
 
 ## Common delivery_module gotchas

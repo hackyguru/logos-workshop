@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(VotingPlugin LANGUAGES CXX)
+project(PollingPlugin LANGUAGES CXX)
 
 if(DEFINED ENV{LOGOS_MODULE_BUILDER_ROOT})
     include($ENV{LOGOS_MODULE_BUILDER_ROOT}/cmake/LogosModule.cmake)
@@ -10,9 +10,9 @@ else()
 endif()
 
 logos_module(
-    NAME voting
+    NAME polling
     SOURCES
-        src/voting_interface.h
-        src/voting_plugin.h
-        src/voting_plugin.cpp
+        src/polling_interface.h
+        src/polling_plugin.h
+        src/polling_plugin.cpp
 )
