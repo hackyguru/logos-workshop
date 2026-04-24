@@ -8,7 +8,14 @@
       "Bash(pkill -9 -f \"logos_host --name todo\")",
       "Bash(sqlite3 '__TRACKED_VAR__/Library/Application Support/logos_host/todo.db' 'SELECT id, title, completed FROM todos;')",
       "Bash(kill -0 94026)",
-      "Bash(pkill -9 -f \"LogosBasecamp.bin\" pkill -9 -f \"logos_host\" sleep 2)"
+      "Bash(pkill -9 -f \"LogosBasecamp.bin\" pkill -9 -f \"logos_host\" sleep 2)",
+      "Bash(pkill -9 -f \"LogosBasecamp.bin\" pkill -9 -f \"logos_host\" sleep 2 cd /Users/guru/Desktop/logos-workshop/part3-voting/voting-core)",
+      "Bash(awk '/storage_module.*INF|storage_module.*WRN/ && /17:1[2-9]/' /tmp/basecamp-live.log)",
+      "Bash(pkill -9 -f \"LogosBasecamp.bin\" pkill -9 -f \"logos_host\" sleep 2 ps ax)",
+      "Bash(rm -rf '__TRACKED_VAR__/Library/Application Support/logos_host/filesharing-storage')",
+      "Bash(rm -f /tmp/basecamp-live.log)",
+      "Bash(./LogosBasecamp.bin)",
+      "Bash(echo \"Basecamp PID $!\")"
     ]
   }
 }

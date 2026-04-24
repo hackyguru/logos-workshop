@@ -87,11 +87,14 @@ bool VotingPlugin::startDelivery()
 
         m_deliveryClient->onEvent(m_deliveryObject, "connectionStateChanged",
             [this](const QString&, const QVariantList& data) {
-                // data[0] is a status string — "Connected" / "Connecting" / "Disconnected"
-                // per liblogosdelivery's connection_status_change event payload.
+                // data[0] is a status string. Current liblogosdelivery emits
+                // "Connected" | "PartiallyConnected" | "Connecting" | "Disconnected" —
+                // the "Partially…" variant was added when the Waku node started
+                // surfacing per-shard connectivity independently. Treat any
+                // non-empty "…connected" string as green.
                 if (data.isEmpty()) return;
                 const QString status = data[0].toString();
-                if (status.compare("Connected", Qt::CaseInsensitive) == 0) {
+                if (status.contains("Connected", Qt::CaseInsensitive)) {
                     setDeliveryStatus(2);
                 } else if (!status.isEmpty()) {
                     setDeliveryStatus(1);
