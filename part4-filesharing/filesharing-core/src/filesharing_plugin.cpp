@@ -50,9 +50,9 @@ QString variantToJson(const QJsonObject& obj)
     return QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }
 
-// Minimal config — matches storage_module's integration-test config exactly.
-// logos-yolo also uses just `data-dir`; the storage_module defaults for
-// listen-addrs, discovery, etc. are what we want.
+// Storage config. Bootstrap SPRs sourced from the published Codex devnet
+// list at https://spr.codex.storage/devnet — without live peer seeds
+// libstorage's discovery layer spins indefinitely looking for peers.
 QString defaultStorageConfig()
 {
     const QString dataRoot = QDir::cleanPath(
@@ -60,10 +60,16 @@ QString defaultStorageConfig()
         + "/filesharing-storage");
     QDir().mkpath(dataRoot);
 
+    QJsonArray bootstrap;
+    bootstrap.append("spr:CiUIAhIhA-VlcoiRm02KyIzrcTP-ljFpzTljfBRRKTIvhMIwqBqWEgIDARpJCicAJQgCEiED5WVyiJGbTYrIjOtxM_6WMWnNOWN8FFEpMi-EwjCoGpYQs8n8wQYaCwoJBHTKubmRAnU6GgsKCQR0yrm5kQJ1OipHMEUCIQDwUNsfReB4ty7JFS5WVQ6n1fcko89qVAOfQEHixa03rgIgan2-uFNDT-r4s9TOkLe9YBkCbsRWYCHGGVJ25rLj0QE");
+    bootstrap.append("spr:CiUIAhIhApIj9p6zJDRbw2NoCo-tj98Y760YbppRiEpGIE1yGaMzEgIDARpJCicAJQgCEiECkiP2nrMkNFvDY2gKj62P3xjvrRhumlGISkYgTXIZozMQvcz8wQYaCwoJBAWhF3WRAnVEGgsKCQQFoRd1kQJ1RCpGMEQCIFZB84O_nzPNuViqEGRL1vJTjHBJ-i5ZDgFL5XZxm4HAAiB8rbLHkUdFfWdiOmlencYVn0noSMRHzn4lJYoShuVzlw");
+    bootstrap.append("spr:CiUIAhIhApqRgeWRPSXocTS9RFkQmwTZRG-Cdt7UR2N7POoz606ZEgIDARpJCicAJQgCEiECmpGB5ZE9JehxNL1EWRCbBNlEb4J23tRHY3s86jPrTpkQj8_8wQYaCwoJBAXfEfiRAnVOGgsKCQQF3xH4kQJ1TipGMEQCIGWJMsF57N1iIEQgTH7IrVOgEgv0J2P2v3jvQr5Cjy-RAiAy4aiZ8QtyDvCfl_K_w6SyZ9csFGkRNTpirq_M_QNgKw");
+
     QJsonObject cfg;
-    cfg["data-dir"]  = dataRoot;
-    cfg["log-level"] = "INFO";
-    cfg["log-file"]  = dataRoot + "/storage.log";
+    cfg["data-dir"]       = dataRoot;
+    cfg["bootstrap-node"] = bootstrap;
+    cfg["log-level"]      = "INFO";
+    cfg["log-file"]       = dataRoot + "/storage.log";
     return variantToJson(cfg);
 }
 

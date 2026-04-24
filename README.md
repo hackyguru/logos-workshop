@@ -1,11 +1,12 @@
 # Logos Workshop
 
-This repository contains code and documentation for 4 beginner-friendly applications that can be built to run on Logos Basecamp as `.lgx` files:
+This repository contains code and documentation for 5 beginner-friendly applications that can be built to run on Logos Basecamp as `.lgx` files:
 
 - **Part 1** — A simple hello world UI plugin
 - **Part 2** — A Todo app with a UI plugin and a Core module (SQLite-backed persistence)
 - **Part 3** — A real-time polling app that uses `logos-delivery-module` — the pre-installed Logos Messaging core module — to broadcast votes peer-to-peer over Waku pub/sub
 - **Part 4** — *🚧 Work in progress — not yet in a working state.* A file-sharing app that uploads files into `logos-storage-module`, surfaces the resulting CIDs, and lets you download / remove content by CID. The integration pattern is in place as reference code, but end-to-end upload/download doesn't currently function; see the note at the top of [`part4-filesharing/`](part4-filesharing/) before digging in.
+- **Part 5** — *🚧 Work in progress — not yet in a working state.* An on-chain counter app — a single `u64` that lives on the Logos blockchain (LEZ), anyone can tap Increment and everyone pointed at the same sequencer sees it go up. Built as a minimal analogue of [`logos-co/whisper-wall`](https://github.com/logos-co/whisper-wall), with all the payment / privacy / admin complexity stripped out. The SPEL program compiles + the Basecamp plugin scaffold is in place, but live sequencer validation is blocked on upstream (public devnet is 502 post-upgrade, local docker stack hits SPEL #140 on macOS). See the note at the top of [`part5-onchain-counter/`](part5-onchain-counter/) before digging in.
 
 ## Prerequisites
 
@@ -16,6 +17,8 @@ This repository contains code and documentation for 4 beginner-friendly applicat
 First build of Part 3 pulls the whole `logos-delivery-module` closure (Nim + libp2p + zerokit + libpq) — budget **15–30 minutes**. Every subsequent build is seconds.
 
 Part 4 pulls `logos-storage-module` (libstorage, also Nim) the first time — similar order of magnitude. `storage_module` is **not** pre-installed on Basecamp, so you'll need to install it once before Part 4's `.lgx` can load (see Part 4 notes below).
+
+Part 5 pulls the RISC-Zero zkVM Docker image (~500 MB) for the on-chain program build; first build of `counter.bin` takes ~7 min, subsequent builds are ~1 min. The plugin itself is small — the heavy install step is `spel` + `wallet` + `logos-blockchain-circuits` on the host, per the Part 5 README.
 
 ## Docs
 
@@ -34,9 +37,13 @@ Part 4 pulls `logos-storage-module` (libstorage, also Nim) the first time — si
 ├── part3-polling/
 │   ├── polling-core/              # Polling backend (C++, integrates delivery_module)
 │   └── polling-ui/                # Polling UI (QML)
-└── part4-filesharing/
-    ├── filesharing-core/         # File sharing backend (C++, integrates storage_module)
-    └── filesharing-ui/           # File sharing UI (QML)
+├── part4-filesharing/
+│   ├── filesharing-core/         # File sharing backend (C++, integrates storage_module)
+│   └── filesharing-ui/           # File sharing UI (QML)
+└── part5-onchain-counter/
+    ├── counter-program/         # SPEL program — the on-chain counter (Rust → RISC-Zero zkVM)
+    ├── counter-core/            # Basecamp plugin — shells out to `spel` + `wallet` CLIs
+    └── counter-ui/              # Counter UI (QML)
 ```
 
 `core` modules are C++ Qt plugins that expose `Q_INVOKABLE` methods. They install into Basecamp's `modules/` directory and have no UI of their own. `ui_qml` modules are QML-only (no compile step) and install into Basecamp's `plugins/` directory as sidebar tabs — they call into core modules via `logos.callModule(...)`.
@@ -62,6 +69,9 @@ nix build --override-input polling path:../polling-core '.#lgx-portable' --out-l
 
 # e.g. from part4-filesharing/filesharing-ui
 nix build --override-input filesharing path:../filesharing-core '.#lgx-portable' --out-link result-portable
+
+# e.g. from part5-onchain-counter/counter-ui
+nix build --override-input counter path:../counter-core '.#lgx-portable' --out-link result-portable
 ```
 
 ### Part 4 — installing `storage_module`

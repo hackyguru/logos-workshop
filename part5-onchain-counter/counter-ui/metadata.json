@@ -1,0 +1,24 @@
+{
+  "name": "counter_ui",
+  "version": "0.1.0",
+  "type": "ui_qml",
+  "category": "example",
+  "description": "On-chain counter — tap to increment a shared number that lives on the Logos blockchain",
+  "view": "Main.qml",
+  "icon": "icons/counter.png",
+  "dependencies": ["counter"],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}

@@ -1,0 +1,4 @@
+target/
+Cargo.lock
+.counter-state
+counter-idl.json

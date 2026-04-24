@@ -1,0 +1,23 @@
+{
+  "name": "counter",
+  "version": "0.1.0",
+  "type": "core",
+  "category": "example",
+  "description": "On-chain counter — read/increment a u64 stored on a LEZ program's PDA",
+  "main": "counter_plugin",
+  "dependencies": [],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}

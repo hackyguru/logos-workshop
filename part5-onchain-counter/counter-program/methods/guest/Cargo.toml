@@ -1,0 +1,18 @@
+[package]
+name = "counter-guest"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[[bin]]
+name = "counter"
+path = "src/bin/counter.rs"
+
+[dependencies]
+spel-framework = { git = "https://github.com/logos-co/spel.git", rev = "refs/heads/main" }
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc1" }
+risc0-zkvm = { version = "=3.0.5", features = ["std"] }
+counter_core = { path = "../../counter_core" }
+serde = { version = "1.0", features = ["derive"] }
+borsh = "1.5"
