@@ -1,11 +1,11 @@
 # Logos Workshop
 
-This repository contains code and documentation for 3 beginner-friendly applications that can be built to run on Logos Basecamp as `.lgx` files:
+This repository contains code and documentation for 4 beginner-friendly applications that can be built to run on Logos Basecamp as `.lgx` files:
 
 - **Part 1** — A simple hello world UI plugin
 - **Part 2** — A Todo app with a UI plugin and a Core module (SQLite-backed persistence)
 - **Part 3** — A real-time polling app that uses `logos-delivery-module` — the pre-installed Logos Messaging core module — to broadcast votes peer-to-peer over Waku pub/sub
-- **Part 4** — A file-sharing app that uploads files into `logos-storage-module`, surfaces the resulting CIDs, and lets you download / remove content by CID
+- **Part 4** — *🚧 Work in progress — not yet in a working state.* A file-sharing app that uploads files into `logos-storage-module`, surfaces the resulting CIDs, and lets you download / remove content by CID. The integration pattern is in place as reference code, but end-to-end upload/download doesn't currently function; see the note at the top of [`part4-filesharing/`](part4-filesharing/) before digging in.
 
 ## Prerequisites
 
@@ -65,6 +65,8 @@ nix build --override-input filesharing path:../filesharing-core '.#lgx-portable'
 ```
 
 ### Part 4 — installing `storage_module`
+
+> 🚧 **Part 4 is work in progress and not yet in a working state.** The steps below build and install the module, but end-to-end upload/download does not currently function. Ship-worthy fix is pending upstream.
 
 Part 4's core depends on `storage_module`, which Basecamp does **not** ship with. Install it into Basecamp's `modules/` directory before importing the Part 4 `.lgx`:
 

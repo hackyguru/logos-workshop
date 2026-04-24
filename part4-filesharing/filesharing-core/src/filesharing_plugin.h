@@ -1,31 +1,33 @@
 #ifndef FILESHARING_PLUGIN_H
 #define FILESHARING_PLUGIN_H
 
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QVariant>
 #include <QVariantList>
+
 #include "filesharing_interface.h"
 #include "logos_api.h"
-#include "logos_api_client.h"
-#include "logos_object.h"
+// logos_sdk.h (auto-generated from metadata.json dependencies) defines the
+// `StorageModule` typed wrapper used below.
 #include "logos_sdk.h"
 
 struct UploadState {
     QString sessionId;
     QString filename;
     qint64  bytes   = 0;
-    QString cid;      // set on success
-    QString error;    // set on failure
-    int     status = 0;   // 0=idle, 1=uploading, 2=done, 3=error
+    QString cid;
+    QString error;
+    int     status  = 0;   // 0=idle, 1=uploading, 2=done, 3=error
 };
 
 struct DownloadState {
-    QString cid;          // also the sessionId
+    QString cid;           // = sessionId for downloads
     QString destPath;
     qint64  bytes   = 0;
     QString error;
-    int     status = 0;   // 0=idle, 1=downloading, 2=done, 3=error
+    int     status  = 0;
 };
 
 class FileSharingPlugin : public QObject, public FileSharingInterface
@@ -38,7 +40,7 @@ public:
     explicit FileSharingPlugin(QObject* parent = nullptr);
     ~FileSharingPlugin() override;
 
-    QString name() const override { return "filesharing"; }
+    QString name()    const override { return "filesharing"; }
     QString version() const override { return "0.1.0"; }
 
     Q_INVOKABLE void initLogos(LogosAPI* api);
@@ -61,22 +63,15 @@ signals:
 
 private:
     void setStorageStatus(int status);
-    void wireEvents();
     void doInitAndStart();
-    void asyncStart();
-    void handleStorageStart(const QVariantList& data);
-    void handleStorageStop(const QVariantList& data);
-    void handleUploadProgress(const QVariantList& data);
-    void handleUploadDone(const QVariantList& data);
-    void handleDownloadProgress(const QVariantList& data);
-    void handleDownloadDone(const QVariantList& data);
+    void subscribeStorageEvents();
 
-    LogosAPIClient* m_storageClient = nullptr;
-    LogosObject*    m_storageObject = nullptr;
+    // Typed storage_module wrapper — created in initLogos, owns an internal
+    // LogosAPIClient + replica. Events subscribe via m_storage->on(...).
+    StorageModule* m_storage = nullptr;
+    bool           m_storageEventsBound = false;
 
     int           m_storageStatus  = 0;
-    bool          m_initialised    = false;
-    int           m_initRetryCount = 0;
     QString       m_lastError;
     UploadState   m_upload;
     DownloadState m_download;
