@@ -130,12 +130,13 @@ Item {
                         font.pixelSize: 11
                     }
 
-                    // Vote tally bar
+                    // Vote tally bar — red "no" background, green "yes" overlay.
+                    // Stays grey when there are no votes yet.
                     Rectangle {
                         Layout.fillWidth: true
                         height: 8
                         radius: 4
-                        color: "#eee"
+                        color: modelData.total > 0 ? "#ea4335" : "#eee"
 
                         Rectangle {
                             anchors.left: parent.left
@@ -145,7 +146,6 @@ Item {
                                                    : 0)
                             radius: 4
                             color: "#34a853"
-                            Behavior on width { NumberAnimation { duration: 200 } }
                         }
                     }
 
@@ -208,27 +208,46 @@ Item {
             }
         }
 
-        // Open / join poll form
+        // Create / Join form — mode toggle at top, id + (optional) question
+        // fields below. Fixed height so the container doesn't jump between
+        // modes.
         Rectangle {
+            id: formCard
             Layout.fillWidth: true
-            height: openCol.implicitHeight + 24
+            Layout.preferredHeight: 210
             color: "#f8f9fa"
             border.color: "#dfe3e8"
             border.width: 1
             radius: 8
 
+            // "create" = new poll, need id + question. "join" = existing poll, id only.
+            property string mode: "create"
+
             ColumnLayout {
-                id: openCol
                 anchors.fill: parent
                 anchors.margins: 12
-                spacing: 6
+                spacing: 10
 
-                Text {
-                    text: "Open or join a poll"
-                    font.pixelSize: 14
-                    font.weight: Font.DemiBold
+                // Segmented mode toggle
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 0
+
+                    Button {
+                        Layout.fillWidth: true
+                        text: "Create poll"
+                        highlighted: formCard.mode === "create"
+                        onClicked: formCard.mode = "create"
+                    }
+                    Button {
+                        Layout.fillWidth: true
+                        text: "Join poll"
+                        highlighted: formCard.mode === "join"
+                        onClicked: formCard.mode = "join"
+                    }
                 }
 
+                // Poll id — always visible. Random helper only in create mode.
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 8
@@ -236,30 +255,43 @@ Item {
                     TextField {
                         id: pollIdField
                         Layout.fillWidth: true
-                        placeholderText: "Poll id (e.g. fruit-best-2026)"
+                        placeholderText: formCard.mode === "create"
+                            ? "Choose a poll id (e.g. fruit-best-2026)"
+                            : "Poll id to join"
                     }
                     Button {
+                        visible: formCard.mode === "create"
                         text: "Random"
                         onClicked: pollIdField.text =
                             "poll-" + Math.random().toString(36).slice(2, 8)
                     }
                 }
 
+                // Question — only in create mode. Space is naturally reclaimed
+                // by the fixed container height staying constant.
                 TextField {
                     id: questionField
+                    visible: formCard.mode === "create"
                     Layout.fillWidth: true
-                    placeholderText: "Question (leave blank when joining an existing poll)"
-                    onAccepted: openButton.clicked()
+                    placeholderText: "Your question (shown to everyone who joins)"
                 }
 
                 Button {
-                    id: openButton
+                    id: actionButton
                     Layout.fillWidth: true
-                    text: "Open / Join"
+                    text: formCard.mode === "create" ? "Create poll" : "Join poll"
+                    enabled: {
+                        const hasId = pollIdField.text.trim().length > 0
+                        if (formCard.mode === "create")
+                            return hasId && questionField.text.trim().length > 0
+                        return hasId
+                    }
                     onClicked: {
                         const id = pollIdField.text.trim()
                         if (id.length === 0) return
-                        callVoting("openPoll", [id, questionField.text.trim()])
+                        const q  = formCard.mode === "create"
+                                   ? questionField.text.trim() : ""
+                        callVoting("openPoll", [id, q])
                         pollIdField.text = ""
                         questionField.text = ""
                         refresh()

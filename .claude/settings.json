@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pkill -9 -f \"LogosBasecamp.bin\" pkill -9 -f \"logos_host\" sleep 2 nix build github:logos-co/logos-storage-module --out-link /tmp/storage-fresh)",
+      "Bash(awk '{print \"logos procs:\", $1}')",
+      "Bash(pkill -9 -f \"LogosBasecamp.bin\" pkill -9 -f \"logos_host\" sleep 2 cd /Users/guru/Desktop/logos-workshop/part4-filesharing/filesharing-core)",
+      "Bash(sqlite3 '__TRACKED_VAR__/Library/Application Support/logos_host/todo.db' '.schema todos')",
+      "Bash(pkill -9 -f \"logos_host --name todo\")",
+      "Bash(sqlite3 '__TRACKED_VAR__/Library/Application Support/logos_host/todo.db' 'SELECT id, title, completed FROM todos;')",
+      "Bash(kill -0 94026)",
+      "Bash(pkill -9 -f \"LogosBasecamp.bin\" pkill -9 -f \"logos_host\" sleep 2)"
+    ]
+  }
+}

@@ -315,7 +315,7 @@ hello_world/
 ```
 
 If you want to skip the typing, the finished version of this part lives in
-[`part1-hello-world/`](part1-hello-world/) — copy it into `hello_world/` and
+[`part1-hello-world-ui/`](../part1-hello-world-ui/) — copy it into `hello_world/` and
 move straight to the build step.
 
 ### 1.2 A tour of the generated files
@@ -474,7 +474,7 @@ Basecamp, the tab picks up the icon.
 
 > **Don't have an icon handy?** Any 128×128 PNG works. One quick option is a
 > one-off Python + Pillow script that renders two letters on a coloured
-> rounded square — the one in `part1-hello-world/icons/hello_world.png` was
+> rounded square — the one in `part1-hello-world-ui/icons/hello_world.png` was
 > made that way in ~20 lines. SVG is not currently supported by Basecamp's
 > sidebar; stick to PNG.
 
@@ -595,7 +595,7 @@ The todo list is in-memory only — just a `QVector` behind the interface —
 so we can keep the focus on the module mechanics, not on SQL or
 filesystems.
 
-The finished version of the core module lives in [`part2-todo/`](part2-todo/).
+The finished version of the core module lives in [`part2-todo/todo-core/`](../part2-todo/todo-core/).
 
 ### 2.1 Scaffold a core module
 
@@ -1101,7 +1101,7 @@ int TodoPlugin::clearAll()
 }
 ```
 
-The [`part2-todo/`](part2-todo/) folder ships with this version of the code
+The [`part2-todo/todo-core/`](../part2-todo/todo-core/) folder ships with this version of the code
 — if you were running the in-memory version from §2.3 live, swap it over
 now.
 
@@ -1168,8 +1168,8 @@ No server. No database. The network *is* the state channel.
 
 We split the work exactly the way Part 2 did: **`voting`** is the core
 module (C++, owns the protocol), **`voting_ui`** is a QML plugin that
-renders it. The finished versions live in [`part3-voting/`](part3-voting/)
-and [`part3-voting-ui/`](part3-voting-ui/).
+renders it. The finished versions live in [`part3-voting/voting-core/`](../part3-voting/voting-core/)
+and [`part3-voting/voting-ui/`](../part3-voting/voting-ui/).
 
 ### 3.2 A tour of `delivery_module`
 

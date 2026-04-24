@@ -1,0 +1,23 @@
+{
+  "name": "filesharing",
+  "version": "0.1.0",
+  "type": "core",
+  "category": "example",
+  "description": "Upload, share, download and remove files via logos-storage (CID-addressed)",
+  "main": "filesharing_plugin",
+  "dependencies": ["storage_module"],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}

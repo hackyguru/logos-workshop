@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QTimer>
 #include <QUuid>
 
 // Content-topic format: /<app>/<version>/<subtopic>/<format>
@@ -157,6 +158,24 @@ bool VotingPlugin::openPoll(const QString& pollId, const QString& question)
 
     qDebug() << "VotingPlugin: opened poll" << pollId << "topic" << topicFor(pollId);
     emit eventResponse("pollOpened", QVariantList{ pollId, question });
+
+    // Request/announce on open:
+    //   - If we know the question → broadcast an announce so subscribed peers pick it up.
+    //   - If we don't → broadcast a requestQuestion; any peer who knows it replies
+    //     with an announce and we adopt it.
+    if (m_started) {
+        QJsonObject obj;
+        if (!question.isEmpty()) {
+            obj["type"]     = "announce";
+            obj["question"] = question;
+        } else {
+            obj["type"] = "requestQuestion";
+        }
+        const QString payload = QString::fromUtf8(
+            QJsonDocument(obj).toJson(QJsonDocument::Compact));
+        m_deliveryClient->invokeRemoteMethod(
+            "delivery_module", "send", topicFor(pollId), payload);
+    }
     return true;
 }
 
@@ -182,8 +201,14 @@ bool VotingPlugin::vote(const QString& pollId, bool yes)
     emit eventResponse("voteReceived", QVariantList{ pollId, m_voterId, yes });
 
     QJsonObject obj;
+    obj["type"]  = "vote";
     obj["voter"] = m_voterId;
     obj["yes"]   = yes;
+    // Piggyback the question — joiners who missed the announce still learn
+    // it as soon as they see any vote come in.
+    if (!m_polls[pollId].question.isEmpty()) {
+        obj["question"] = m_polls[pollId].question;
+    }
     const QString payload = QString::fromUtf8(
         QJsonDocument(obj).toJson(QJsonDocument::Compact));
 
@@ -280,9 +305,45 @@ void VotingPlugin::handleMessageReceived(const QVariantList& data)
         qWarning() << "VotingPlugin: invalid JSON payload:" << payload;
         return;
     }
-    const QJsonObject obj   = doc.object();
-    const QString     voter = obj["voter"].toString();
-    const bool        yes   = obj["yes"].toBool();
+    const QJsonObject obj  = doc.object();
+    const QString     type = obj.value("type").toString("vote");  // legacy payloads = vote
+
+    // Adopt the question if we don't already have one locally. Both announces
+    // and (piggybacked) votes can carry it — first one wins.
+    const QString incomingQuestion = obj.value("question").toString();
+    if (!incomingQuestion.isEmpty() && m_polls[pollId].question.isEmpty()) {
+        m_polls[pollId].question = incomingQuestion;
+        emit eventResponse("pollOpened", QVariantList{ pollId, incomingQuestion });
+    }
+
+    if (type == "requestQuestion") {
+        // A peer just joined without a question and wants it. Reply with an
+        // announce if we know it — but DEFER the send via QTimer::singleShot
+        // so we don't re-enter delivery_module from inside its own event
+        // dispatch (that would deadlock the main thread).
+        if (!m_polls[pollId].question.isEmpty()) {
+            const QString q     = m_polls[pollId].question;
+            const QString topic = topicFor(pollId);
+            QTimer::singleShot(0, this, [this, q, topic]() {
+                if (!m_deliveryClient) return;
+                QJsonObject resp;
+                resp["type"]     = "announce";
+                resp["question"] = q;
+                const QString payload = QString::fromUtf8(
+                    QJsonDocument(resp).toJson(QJsonDocument::Compact));
+                m_deliveryClient->invokeRemoteMethod(
+                    "delivery_module", "send", topic, payload);
+            });
+        }
+        return;
+    }
+
+    if (type == "announce") {
+        return;   // nothing else to do — the question adoption above already happened
+    }
+
+    const QString voter = obj["voter"].toString();
+    const bool    yes   = obj["yes"].toBool();
     if (voter.isEmpty()) return;
 
     // Latest-wins by voter id, so duplicate deliveries of the same vote don't double-count.
