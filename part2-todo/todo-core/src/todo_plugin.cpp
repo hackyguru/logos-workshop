@@ -111,27 +111,33 @@ QString TodoPlugin::listTodos()
     return QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact));
 }
 
-bool TodoPlugin::completeTodo(int id)
+bool TodoPlugin::completeTodo(const QString& id)
 {
+    bool ok = false;
+    const int idInt = id.toInt(&ok);
+    if (!ok) { qWarning() << "TodoPlugin::completeTodo bad id:" << id; return false; }
     QSqlDatabase db = QSqlDatabase::database(CONNECTION);
     QSqlQuery q(db);
     q.prepare("UPDATE todos SET completed = 1 WHERE id = ?");
-    q.addBindValue(id);
+    q.addBindValue(idInt);
     if (!q.exec() || q.numRowsAffected() == 0) return false;
-    qDebug() << "TodoPlugin::completeTodo" << id;
-    emit eventResponse("todoCompleted", QVariantList{ id });
+    qDebug() << "TodoPlugin::completeTodo" << idInt;
+    emit eventResponse("todoCompleted", QVariantList{ idInt });
     return true;
 }
 
-bool TodoPlugin::removeTodo(int id)
+bool TodoPlugin::removeTodo(const QString& id)
 {
+    bool ok = false;
+    const int idInt = id.toInt(&ok);
+    if (!ok) { qWarning() << "TodoPlugin::removeTodo bad id:" << id; return false; }
     QSqlDatabase db = QSqlDatabase::database(CONNECTION);
     QSqlQuery q(db);
     q.prepare("DELETE FROM todos WHERE id = ?");
-    q.addBindValue(id);
+    q.addBindValue(idInt);
     if (!q.exec() || q.numRowsAffected() == 0) return false;
-    qDebug() << "TodoPlugin::removeTodo" << id;
-    emit eventResponse("todoRemoved", QVariantList{ id });
+    qDebug() << "TodoPlugin::removeTodo" << idInt;
+    emit eventResponse("todoRemoved", QVariantList{ idInt });
     return true;
 }
 

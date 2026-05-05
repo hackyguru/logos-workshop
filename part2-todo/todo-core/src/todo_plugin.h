@@ -24,8 +24,8 @@ public:
 
     Q_INVOKABLE int     addTodo(const QString& title) override;
     Q_INVOKABLE QString listTodos() override;
-    Q_INVOKABLE bool    completeTodo(int id) override;
-    Q_INVOKABLE bool    removeTodo(int id) override;
+    Q_INVOKABLE bool    completeTodo(const QString& id) override;
+    Q_INVOKABLE bool    removeTodo(const QString& id) override;
     Q_INVOKABLE int     clearAll() override;
 
 signals:

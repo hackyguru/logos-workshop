@@ -144,16 +144,20 @@ Item {
         return logos.callModule("todo", method, args)
     }
 
+    // The Basecamp prerelease (>= 0.1.2) IPC layer JSON-encodes every remote-
+    // method return value, so a `QString` returned from C++ arrives in QML as
+    // a JSON-string literal — i.e. `"[{...}]"` (with the literal quote chars
+    // around the array). We unwrap that one layer before parsing again.
     function refresh() {
-        const json = callTodo("listTodos", [])
-        if (json === null || json === undefined) {
-            root.todos = []
-            return
-        }
+        let raw = callTodo("listTodos", [])
+        if (raw === null || raw === undefined) { root.todos = []; return }
         try {
-            root.todos = JSON.parse(json)
+            // First parse: unwrap the IPC's JSON-string wrapper.
+            const inner = (typeof raw === "string") ? JSON.parse(raw) : raw
+            // Second parse: the inner might itself be the JSON array string.
+            root.todos = (typeof inner === "string") ? JSON.parse(inner) : inner
         } catch (e) {
-            console.log("listTodos parse error:", e, "payload:", json)
+            console.log("listTodos parse error:", e, "payload:", raw)
             root.todos = []
         }
     }
