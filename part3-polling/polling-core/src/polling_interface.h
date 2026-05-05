@@ -18,7 +18,10 @@ public:
     // Polls — each poll is a content topic /polling/1/poll-<id>/json
     Q_INVOKABLE virtual bool    openPoll(const QString& pollId, const QString& question) = 0;
     Q_INVOKABLE virtual bool    closePoll(const QString& pollId) = 0;
-    Q_INVOKABLE virtual bool    vote(const QString& pollId, bool yes) = 0;
+    // The Basecamp prerelease (>= 0.1.2) IPC layer marshals every QML
+    // Q_INVOKABLE arg as QString, so the bool param must be QString here.
+    // Impl parses "true"/"false"/"1"/"0" back to bool.
+    Q_INVOKABLE virtual bool    vote(const QString& pollId, const QString& yes) = 0;
 
     // Query helpers (return compact JSON)
     Q_INVOKABLE virtual QString listPolls() = 0;

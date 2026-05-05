@@ -21,11 +21,27 @@ Item {
         return logos.callModule("polling", method, args)
     }
 
+    // Basecamp prerelease (>= 0.1.2) JSON-encodes every remote-method return
+    // value, so a `QString` returned from C++ arrives in QML as a JSON-string
+    // literal — empty `""` becomes the 2-char string `""`, and `[{...}]`
+    // arrives as `"[{...}]"`. Unwrap that layer before using.
+    function unwrapRemote(raw, defaultVal) {
+        if (raw === null || raw === undefined) return defaultVal
+        if (typeof raw !== "string") return raw
+        try { return JSON.parse(raw) } catch (e) { return defaultVal }
+    }
+
     function refresh() {
-        deliveryStatus = callPolling("deliveryStatus", []) || 0
-        if (voterId === "") voterId = callPolling("myVoterId", []) || ""
-        const json = callPolling("listPolls", [])
-        try { polls = JSON.parse(json) } catch (e) { polls = [] }
+        const sNum = unwrapRemote(callPolling("deliveryStatus", []), 0)
+        deliveryStatus = (typeof sNum === "number") ? sNum : 0
+        if (voterId === "") {
+            const v = unwrapRemote(callPolling("myVoterId", []), "")
+            voterId = (typeof v === "string") ? v : ""
+        }
+        const inner = unwrapRemote(callPolling("listPolls", []), [])
+        try {
+            polls = (typeof inner === "string") ? JSON.parse(inner) : inner
+        } catch (e) { polls = [] }
     }
 
     function statusText(s) {

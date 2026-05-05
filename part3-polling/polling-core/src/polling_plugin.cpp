@@ -49,32 +49,37 @@ bool PollingPlugin::startDelivery()
         return false;
     }
 
-    // logos.dev preset = cluster 2, built-in bootstrap nodes, auto-sharded.
-    // See DeliveryModulePlugin::createNode docstring in logos-co/logos-delivery-module.
-    // For running two Basecamps on one machine, set POLLING_TCPPORT=60001 (or
-    // any free port) on the second instance to avoid the 60000 port clash.
-    // Individual config keys override the preset's defaults.
-    QJsonObject cfgObj;
-    cfgObj["logLevel"] = "INFO";
-    cfgObj["mode"]     = "Core";
-    cfgObj["preset"]   = "logos.dev";
-    const int customPort = qEnvironmentVariableIntValue("POLLING_TCPPORT");
-    if (customPort > 0) {
-        cfgObj["tcpPort"]       = customPort;
-        // discv5 uses its own UDP port (default 9000). Auto-derive a unique one
-        // so a second instance doesn't collide with the first's UDP bind.
-        // 60001 → 9001, 60002 → 9002, etc.
-        const int udpPort = 9000 + (customPort - 60000);
-        cfgObj["discv5UdpPort"] = udpPort;
-        qDebug() << "PollingPlugin: using custom tcpPort" << customPort
-                 << "and discv5UdpPort" << udpPort
-                 << "(from POLLING_TCPPORT env)";
-    }
-    const QString cfg = QString::fromUtf8(
-        QJsonDocument(cfgObj).toJson(QJsonDocument::Compact));
-    if (!invokeBool("createNode", "createNode", cfg)) {
-        setDeliveryStatus(3);
-        return false;
+    // delivery_module's createNode is "call once per process". Skip on
+    // re-Start so users don't see an Error after Stop+Start cycles.
+    if (!m_createNodeDone) {
+        // logos.dev preset = cluster 2, built-in bootstrap nodes, auto-sharded.
+        // See DeliveryModulePlugin::createNode docstring in logos-co/logos-delivery-module.
+        // For running two Basecamps on one machine, set POLLING_TCPPORT=60001 (or
+        // any free port) on the second instance to avoid the 60000 port clash.
+        // Individual config keys override the preset's defaults.
+        QJsonObject cfgObj;
+        cfgObj["logLevel"] = "INFO";
+        cfgObj["mode"]     = "Core";
+        cfgObj["preset"]   = "logos.dev";
+        const int customPort = qEnvironmentVariableIntValue("POLLING_TCPPORT");
+        if (customPort > 0) {
+            cfgObj["tcpPort"]       = customPort;
+            // discv5 uses its own UDP port (default 9000). Auto-derive a unique one
+            // so a second instance doesn't collide with the first's UDP bind.
+            // 60001 → 9001, 60002 → 9002, etc.
+            const int udpPort = 9000 + (customPort - 60000);
+            cfgObj["discv5UdpPort"] = udpPort;
+            qDebug() << "PollingPlugin: using custom tcpPort" << customPort
+                     << "and discv5UdpPort" << udpPort
+                     << "(from POLLING_TCPPORT env)";
+        }
+        const QString cfg = QString::fromUtf8(
+            QJsonDocument(cfgObj).toJson(QJsonDocument::Compact));
+        if (!invokeBool("createNode", "createNode", cfg)) {
+            setDeliveryStatus(3);
+            return false;
+        }
+        m_createNodeDone = true;
     }
 
     // Register event handlers BEFORE start so we don't miss the first connectionStateChanged.
@@ -115,7 +120,16 @@ bool PollingPlugin::startDelivery()
     }
 
     m_started = true;
-    // Do NOT set status here — the event handler already did (or will).
+    // Optimistically flip to "connected (locally up)". The connectionStateChanged
+    // event from delivery_module fires only when remote peers complete a
+    // libp2p handshake, which can take 1–2 minutes — and currently fails on
+    // logos.dev because its bundled bootstrap peer IDs are stale (the dialed
+    // peers respond with different peer IDs and Waku drops them with a noise-
+    // handshake mismatch). Until upstream rotates the preset, treat
+    // "delivery_module.start() succeeded" as enough to mark the node ready
+    // for the workshop UX. The event handler can still bump us back to 1
+    // (Connecting) or stay at 2 once peers actually arrive.
+    if (m_deliveryStatus < 2) setDeliveryStatus(2);
     return true;
 }
 
@@ -194,19 +208,24 @@ bool PollingPlugin::closePoll(const QString& pollId)
     return true;
 }
 
-bool PollingPlugin::vote(const QString& pollId, bool yes)
+bool PollingPlugin::vote(const QString& pollId, const QString& yes)
 {
     if (!m_polls.contains(pollId)) return false;
     if (!m_started) return false;
 
+    // The Basecamp prerelease IPC delivers QML args as QString. Accept
+    // "true" / "1" as yes and anything else as no.
+    const QString lower = yes.trimmed().toLower();
+    const bool yesB = (lower == "true" || lower == "1");
+
     // Optimistic local update — also covers offline use.
-    m_polls[pollId].votes.insert(m_voterId, yes);
-    emit eventResponse("voteReceived", QVariantList{ pollId, m_voterId, yes });
+    m_polls[pollId].votes.insert(m_voterId, yesB);
+    emit eventResponse("voteReceived", QVariantList{ pollId, m_voterId, yesB });
 
     QJsonObject obj;
     obj["type"]  = "vote";
     obj["voter"] = m_voterId;
-    obj["yes"]   = yes;
+    obj["yes"]   = yesB;
     // Piggyback the question — joiners who missed the announce still learn
     // it as soon as they see any vote come in.
     if (!m_polls[pollId].question.isEmpty()) {
@@ -371,6 +390,18 @@ bool PollingPlugin::invokeBool(const char* what,
     if (!r.isValid()) {
         qWarning() << "PollingPlugin:" << what << "RPC failed (invalid QVariant)";
         return false;
+    }
+    // Newer delivery_module returns LogosResult instead of a plain bool, so
+    // r.toBool() always evaluates to false on the wrapped struct. Unwrap and
+    // check `.success` when the QVariant carries a LogosResult; fall back to
+    // the legacy bool path for older delivery_module builds.
+    if (r.canConvert<LogosResult>()) {
+        const LogosResult lr = r.value<LogosResult>();
+        if (!lr.success) {
+            qWarning() << "PollingPlugin:" << what << "failed:" << lr.error.toString();
+            return false;
+        }
+        return true;
     }
     if (!r.toBool()) {
         qWarning() << "PollingPlugin:" << what << "returned false:" << r;

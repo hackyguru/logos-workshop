@@ -37,7 +37,7 @@ public:
 
     Q_INVOKABLE bool    openPoll(const QString& pollId, const QString& question) override;
     Q_INVOKABLE bool    closePoll(const QString& pollId) override;
-    Q_INVOKABLE bool    vote(const QString& pollId, bool yes) override;
+    Q_INVOKABLE bool    vote(const QString& pollId, const QString& yes) override;
 
     Q_INVOKABLE QString listPolls() override;
     Q_INVOKABLE QString tally(const QString& pollId) override;
@@ -61,6 +61,12 @@ private:
     LogosObject*    m_deliveryObject = nullptr;
     int             m_deliveryStatus = 0;
     bool            m_started        = false;
+    // delivery_module's createNode is documented as "call once per process".
+    // Once we call it, we must NOT call it again — subsequent calls return
+    // "context already initialized" and the workshop user sees an Error toast
+    // when they Stop and Start again. Track that here so a second Start in
+    // the same process skips createNode and goes straight to start().
+    bool            m_createNodeDone = false;
 };
 
 #endif
