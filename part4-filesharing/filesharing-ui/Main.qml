@@ -1,3 +1,19 @@
+// File-sharing plugin — pure QML, no C++ core. Talks to storage_module
+// (logos-storage / Codex) directly via the prerelease Basecamp's logos
+// JS bridge. Runs in-process with the main app, same single-hop pattern as
+// the upstream storage_ui plugin.
+//
+// Bridge API used (all from the prerelease's view-module-runtime):
+//   logos.callModule(moduleId, method, [])            — sync, empty args only
+//   logos.callModuleAsync(moduleId, method, args, cb) — async with non-empty args
+//   logos.onModuleEvent(moduleId, eventName)          — register a subscription
+//   Connections { target: logos
+//       function onModuleEventReceived(moduleName, eventName, data) { ... } }
+//                                                     — receive events
+//
+// IPC return values arrive as JSON-encoded strings; we JSON.parse one layer
+// before using.
+
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
@@ -7,35 +23,52 @@ Item {
     width: 720
     height: 900
 
+    // ── State ─────────────────────────────────────────────────────────────
+    // 0 = Off, 1 = Starting, 2 = Running, 3 = Error
     property int    storageStatus: 0
-    property string lastError: ""
-    property var    files: []
-    property var    lastUpload: ({})
-    property var    lastDownload: ({})
+    property string lastError:     ""
+    // storage_module's init() is documented as "call once per process".
+    // Subsequent calls return false ("already initialised") — that's fine,
+    // we just need to skip them and go straight to start(). Track that here
+    // so a Stop→Start cycle within the same Basecamp run doesn't fail.
+    property bool   initDone:      false
 
-    // ── Logos bridge helpers ─────────────────────────────────────────
+    // status: 0=idle, 1=in-flight, 2=done, 3=error
+    property var lastUpload:   ({ filename: "", cid: "", bytes: 0, status: 0, error: "" })
+    property var lastDownload: ({ destPath: "", cid: "", bytes: 0, status: 0, error: "" })
 
-    function callFS(method, args) {
-        if (typeof logos === "undefined" || !logos.callModule) {
-            console.log("logos bridge unavailable")
-            return null
-        }
-        return logos.callModule("filesharing", method, args)
+    // ── Bridge helpers ────────────────────────────────────────────────────
+
+    function callSm(method, args, cb) {
+        if (typeof logos === "undefined" || !logos.callModuleAsync) return
+        logos.callModuleAsync("storage_module", method, args, cb || function(){})
+    }
+    function callSmSync(method) {
+        if (typeof logos === "undefined" || !logos.callModule) return null
+        return logos.callModule("storage_module", method, [])
     }
 
-    function refresh() {
-        storageStatus = callFS("storageStatus", []) || 0
-        lastError     = callFS("lastError", []) || ""
-
-        try { lastUpload   = JSON.parse(callFS("currentUpload",   []) || "{}") } catch (e) { lastUpload   = {} }
-        try { lastDownload = JSON.parse(callFS("currentDownload", []) || "{}") } catch (e) { lastDownload = {} }
-
-        if (storageStatus === 2) {
-            try { files = JSON.parse(callFS("listFiles", []) || "[]") } catch (e) { files = [] }
-        } else {
-            files = []
-        }
+    // Decode the prerelease IPC's JSON-wrapped return values. Empty / null /
+    // parse errors fall back to defaultVal.
+    function unwrap(raw, defaultVal) {
+        if (raw === null || raw === undefined) return defaultVal
+        if (typeof raw !== "string") return raw
+        try { return JSON.parse(raw) } catch (e) { return defaultVal }
     }
+
+    // libstorage data dir under the user's HOME. Matches storage_ui's default
+    // so the same data dir is reused if both are installed.
+    function defaultConfigJson() {
+        // Qt.resolvedUrl gives a file URL; strip the scheme to get a plain path.
+        // We hard-code ~/.logos_storage/data which is the upstream default.
+        return JSON.stringify({
+            "data-dir": Qt.application.arguments && Qt.application.arguments.length > 0
+                        ? "" : "" /* placeholder */,
+            "log-level": "INFO"
+        })
+    }
+
+    // ── Display helpers ───────────────────────────────────────────────────
 
     function statusText(s) {
         if (s === 0) return "Off"
@@ -50,32 +83,182 @@ Item {
         if (s === 3) return "#ea4335"
         return "#9aa5b1"
     }
-
     function humanSize(n) {
         if (!n || n <= 0) return "0 B"
         const units = ["B", "KB", "MB", "GB", "TB"]
-        let i = 0
-        let v = n
+        let i = 0, v = n
         while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
         return v.toFixed(v < 10 && i > 0 ? 1 : 0) + " " + units[i]
     }
-
-    // Basecamp's QML sandbox whitelists only QtQuick / QtQuick.Controls 2.15 /
-    // QtQuick.Layouts 1.15 — QtQuick.Dialogs and Qt.labs.platform are both
-    // "not installed" inside plugins. Hence: no FileDialog. Users paste a
-    // path, or drag a file into the DropArea (both TextFields accept drops).
-
-    function normaliseUrl(path) {
-        // DropArea gives us file:// URLs; TextField paste gives a raw path.
-        // Storage module's uploadUrl takes either, but we want a consistent
-        // file:// URL for both cases so the filename extraction works.
-        if (!path) return ""
-        if (path.indexOf("file://") === 0) return path
-        if (path.charAt(0) === "/") return "file://" + path
-        return path
+    function normaliseUrl(p) {
+        if (!p) return ""
+        if (p.indexOf("file://") === 0) return p
+        if (p.charAt(0) === "/") return "file://" + p
+        return p
     }
 
-    // ── Layout ───────────────────────────────────────────────────────
+    // ── Lifecycle: subscribe to storage_module events on load ─────────────
+    // The prerelease's bridge:
+    //   logos.onModuleEvent(moduleId, eventName)      — registers the subscription
+    //   Connections { target: logos                    — events arrive on the
+    //       function onModuleEventReceived(            "moduleEventReceived" signal
+    //           moduleName, eventName, data) { ... } } with the data payload
+    // Passing a callback as a 3rd arg to onModuleEvent is silently dropped
+    // ("Too many arguments, ignoring 1") — the call still registers but no
+    // events ever reach a per-call handler, so route everything through the
+    // Connections block below.
+
+    Connections {
+        target: typeof logos !== "undefined" ? logos : null
+        function onModuleEventReceived(moduleName, eventName, data) {
+            if (moduleName !== "storage_module") return
+            handleStorageEvent(eventName, data)
+        }
+    }
+
+    Component.onCompleted: {
+        if (typeof logos === "undefined" || !logos.onModuleEvent) {
+            console.log("filesharing: logos.onModuleEvent not available — events disabled")
+            return
+        }
+        logos.onModuleEvent("storage_module", "storageStart")
+        logos.onModuleEvent("storage_module", "storageStop")
+        logos.onModuleEvent("storage_module", "storageUploadProgress")
+        logos.onModuleEvent("storage_module", "storageUploadDone")
+        logos.onModuleEvent("storage_module", "storageDownloadProgress")
+        logos.onModuleEvent("storage_module", "storageDownloadDone")
+    }
+
+    function handleStorageEvent(eventName, data) {
+        // `data` is a QVariantList. Empirically the bridge sometimes hands it
+        // through as a JSON-encoded string; unwrap once defensively.
+        if (typeof data === "string") {
+            try { data = JSON.parse(data) } catch (e) { /* keep as string */ }
+        }
+        if (eventName === "storageStart") {
+            const ok = data && (data[0] === true || data[0] === "true")
+            if (ok) { storageStatus = 2; lastError = "" }
+            else    { storageStatus = 3; lastError = (data && data[1]) || "storage failed to start" }
+        } else if (eventName === "storageStop") {
+            storageStatus = 0
+        } else if (eventName === "storageUploadProgress") {
+            if (!data || lastUpload.status !== 1) return
+            const inc = (typeof data[2] === "number") ? data[2] : parseInt(data[2] || "0", 10)
+            const upd = lastUpload
+            upd.bytes += inc
+            lastUpload = upd
+        } else if (eventName === "storageUploadDone") {
+            const upd = lastUpload
+            if (lastUpload.status !== 1) return
+            // Payload shape (from storage_module): [success: bool, sessionId, cidOrError]
+            if (data && data[0] === true) {
+                upd.cid = data[2] || data[1] || ""
+                upd.status = upd.cid ? 2 : 3
+                if (!upd.cid) upd.error = "no CID in storageUploadDone payload"
+            } else if (data) {
+                upd.error = data[2] || data[1] || "upload failed"
+                upd.status = 3
+            }
+            lastUpload = upd
+        } else if (eventName === "storageDownloadProgress") {
+            if (!data || lastDownload.status !== 1) return
+            const inc = (typeof data[2] === "number") ? data[2] : parseInt(data[2] || "0", 10)
+            const upd = lastDownload
+            upd.bytes += inc
+            lastDownload = upd
+        } else if (eventName === "storageDownloadDone") {
+            const upd = lastDownload
+            if (lastDownload.status !== 1) return
+            if (data && data[0] === false) {
+                upd.error = data[2] || data[1] || "download failed"
+                upd.status = 3
+            } else {
+                upd.status = 2
+            }
+            lastDownload = upd
+        }
+    }
+
+    // ── Actions ───────────────────────────────────────────────────────────
+
+    function startStorage() {
+        if (storageStatus === 1 || storageStatus === 2) return
+        storageStatus = 1
+        lastError = ""
+
+        const cfg = JSON.stringify({ "log-level": "INFO" })
+        // Helper — interpret the init/start return shape: plain bool from
+        // storage_module's current build, or LogosResult struct in newer ones.
+        function interpretBoolResult(raw) {
+            const r = unwrap(raw, null)
+            if (r === true)  return true
+            if (r === false) return false
+            if (r && r.success === true) return true
+            return false
+        }
+
+        function callStartAfterInit() {
+            callSm("start", [], function(startRaw) {
+                const startOk = interpretBoolResult(startRaw)
+                if (!startOk) {
+                    storageStatus = 3
+                    lastError = "storage_module.start() returned false"
+                    return
+                }
+                if (storageStatus === 1) storageStatus = 2
+            })
+        }
+
+        // Skip init on subsequent Starts within the same Basecamp run —
+        // storage_module's init is once-per-process. start() can be called
+        // any number of times.
+        if (initDone) {
+            callStartAfterInit()
+            return
+        }
+
+        callSm("init", [cfg], function(initRaw) {
+            const initOk = interpretBoolResult(initRaw)
+            if (!initOk) {
+                storageStatus = 3
+                lastError = "Storage init failed. Try quitting Basecamp, " +
+                            "deleting ~/Library/Application Support/Storage, " +
+                            "and starting again."
+                return
+            }
+            initDone = true
+            callStartAfterInit()
+        })
+    }
+
+    function stopStorage() {
+        if (storageStatus !== 2) return
+        callSm("stop", [], function() { storageStatus = 0 })
+    }
+
+    function uploadFile(path) {
+        if (storageStatus !== 2) return
+        const url = normaliseUrl(path)
+        if (!url) return
+        const filename = url.split("/").pop()
+        lastUpload = { filename: filename, cid: "", bytes: 0, status: 1, error: "" }
+        callSm("uploadUrl", [url], function(_r) {
+            // sessionId is in r if we wanted it; the CID arrives via the
+            // storageUploadDone event handler above.
+        })
+    }
+
+    function downloadFile(cid, dest) {
+        if (storageStatus !== 2) return
+        if (!cid || !dest) return
+        const destUrl = normaliseUrl(dest)
+        lastDownload = { destPath: destUrl, cid: cid, bytes: 0, status: 1, error: "" }
+        // Signature: downloadToUrl(cid, url, force)
+        callSm("downloadToUrl", [cid, destUrl, false], function(_r) {})
+    }
+
+
+    // ── Layout ────────────────────────────────────────────────────────────
 
     ColumnLayout {
         anchors.fill: parent
@@ -86,17 +269,13 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             spacing: 10
-
             Text {
                 text: "File sharing"
                 font.pixelSize: 24
                 font.weight: Font.DemiBold
                 Layout.fillWidth: true
             }
-            Rectangle {
-                width: 10; height: 10; radius: 5
-                color: statusColor(storageStatus)
-            }
+            Rectangle { width: 10; height: 10; radius: 5; color: statusColor(storageStatus) }
             Text {
                 text: statusText(storageStatus)
                 color: "#444"
@@ -105,16 +284,13 @@ Item {
             Button {
                 text: storageStatus === 0 || storageStatus === 3 ? "Start" : "Stop"
                 onClicked: {
-                    if (storageStatus === 0 || storageStatus === 3) callFS("startStorage", [])
-                    else                                             callFS("stopStorage",  [])
-                    refresh()
+                    if (storageStatus === 0 || storageStatus === 3) startStorage()
+                    else                                             stopStorage()
                 }
             }
         }
 
-        // Persistent error banner — only shows when the core reports an error.
-        // This is how a failed storage_module.init / start surfaces to the user
-        // instead of silently flipping to status 3.
+        // Error banner
         Rectangle {
             Layout.fillWidth: true
             visible: lastError.length > 0
@@ -128,19 +304,13 @@ Item {
                 id: errCol
                 anchors.fill: parent
                 anchors.margins: 10
-                spacing: 2
-
-                Text {
-                    text: "Storage error"
-                    font.pixelSize: 12
-                    font.weight: Font.DemiBold
-                    color: "#b3261e"
-                }
+                spacing: 4
+                Text { text: "Storage error"; color: "#b3261e"; font.weight: Font.DemiBold; font.pixelSize: 12 }
                 Text {
                     Layout.fillWidth: true
                     text: lastError
                     color: "#5f1f1a"
-                    font.pixelSize: 12
+                    font.pixelSize: 11
                     font.family: "monospace"
                     wrapMode: Text.WordWrap
                 }
@@ -150,11 +320,11 @@ Item {
         // Upload card
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: uploadCol.implicitHeight + 24
             color: "#f8f9fa"
             border.color: "#dfe3e8"
             border.width: 1
-            radius: 8
+            radius: 6
+            Layout.preferredHeight: uploadCol.implicitHeight + 24
 
             ColumnLayout {
                 id: uploadCol
@@ -162,23 +332,13 @@ Item {
                 anchors.margins: 12
                 spacing: 8
 
-                Text {
-                    text: "Upload"
-                    font.pixelSize: 16
-                    font.weight: Font.DemiBold
-                    color: "#1f2d3d"
-                }
-
+                Text { text: "Upload"; font.pixelSize: 16; font.weight: Font.DemiBold }
                 Text {
                     text: "Paste a file path or drag a file from Finder into the field below, then Upload."
-                    color: "#666"
-                    font.pixelSize: 11
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
+                    color: "#666"; font.pixelSize: 11
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap
                 }
 
-                // The DropArea sits behind the TextField. When a file is
-                // dragged in, we set the TextField text from the first URL.
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.preferredHeight: uploadPathField.implicitHeight + 12
@@ -196,7 +356,6 @@ Item {
                         selectByMouse: true
                         background: null
                     }
-
                     DropArea {
                         id: uploadDrop
                         anchors.fill: parent
@@ -212,16 +371,10 @@ Item {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 8
-
                     Button {
                         text: "Upload"
                         enabled: storageStatus === 2 && uploadPathField.text.trim().length > 0
-                        onClicked: {
-                            const url = normaliseUrl(uploadPathField.text.trim())
-                            if (url.length === 0) return
-                            callFS("uploadFile", [url])
-                            refresh()
-                        }
+                        onClicked: uploadFile(uploadPathField.text.trim())
                     }
                     Text {
                         text: lastUpload.filename
@@ -241,42 +394,32 @@ Item {
                     visible: lastUpload.status === 1 || lastUpload.status === 2
                 }
 
-                // CID row — visible once the upload reports a CID
                 RowLayout {
                     Layout.fillWidth: true
-                    visible: lastUpload.cid && lastUpload.cid.length > 0
+                    visible: !!lastUpload.cid && lastUpload.cid.length > 0
                     spacing: 8
 
-                    Text {
-                        text: "CID:"
-                        color: "#666"
-                        font.pixelSize: 12
-                    }
+                    Text { text: "CID:"; color: "#666"; font.pixelSize: 12 }
                     TextField {
                         id: cidOutField
                         Layout.fillWidth: true
                         text: lastUpload.cid || ""
                         readOnly: true
                         font.family: "monospace"
-                        font.pixelSize: 12
+                        font.pixelSize: 11
                         selectByMouse: true
                     }
                     Button {
                         text: "Copy"
-                        onClicked: {
-                            cidOutField.selectAll()
-                            cidOutField.copy()
-                        }
+                        onClicked: { cidOutField.selectAll(); cidOutField.copy() }
                     }
                 }
 
                 Text {
-                    visible: lastUpload.status === 3 && lastUpload.error
+                    visible: lastUpload.status === 3 && lastUpload.error.length > 0
                     text: "Error: " + (lastUpload.error || "")
-                    color: "#ea4335"
-                    font.pixelSize: 12
-                    wrapMode: Text.WordWrap
-                    Layout.fillWidth: true
+                    color: "#b3261e"
+                    font.pixelSize: 11
                 }
             }
         }
@@ -284,11 +427,11 @@ Item {
         // Download card
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: downloadCol.implicitHeight + 24
             color: "#f8f9fa"
             border.color: "#dfe3e8"
             border.width: 1
-            radius: 8
+            radius: 6
+            Layout.preferredHeight: downloadCol.implicitHeight + 24
 
             ColumnLayout {
                 id: downloadCol
@@ -296,21 +439,16 @@ Item {
                 anchors.margins: 12
                 spacing: 8
 
-                Text {
-                    text: "Download"
-                    font.pixelSize: 16
-                    font.weight: Font.DemiBold
-                    color: "#1f2d3d"
-                }
+                Text { text: "Download"; font.pixelSize: 16; font.weight: Font.DemiBold }
 
                 TextField {
                     id: cidField
                     Layout.fillWidth: true
-                    placeholderText: "Paste a CID (zDv...)"
+                    placeholderText: "Paste a CID (zDv…)"
                     font.family: "monospace"
                     font.pixelSize: 12
+                    selectByMouse: true
                 }
-
                 TextField {
                     id: saveToField
                     Layout.fillWidth: true
@@ -318,22 +456,15 @@ Item {
                     font.pixelSize: 12
                     selectByMouse: true
                 }
-
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 8
-
                     Button {
                         text: "Download"
-                        enabled: storageStatus === 2
-                                 && cidField.text.trim().length > 0
-                                 && saveToField.text.trim().length > 0
-                        onClicked: {
-                            const cid  = cidField.text.trim()
-                            const dest = normaliseUrl(saveToField.text.trim())
-                            callFS("downloadFile", [cid, dest])
-                            refresh()
-                        }
+                        enabled: storageStatus === 2 &&
+                                 cidField.text.trim().length > 0 &&
+                                 saveToField.text.trim().length > 0
+                        onClicked: downloadFile(cidField.text.trim(), saveToField.text.trim())
                     }
                     Text {
                         text: lastDownload.destPath
@@ -342,124 +473,19 @@ Item {
                         color: "#555"
                         font.pixelSize: 12
                         Layout.fillWidth: true
-                        elide: Text.ElideMiddle
+                        elide: Text.ElideRight
                     }
                 }
-
                 ProgressBar {
                     Layout.fillWidth: true
                     indeterminate: lastDownload.status === 1
                     value: lastDownload.status === 2 ? 1 : 0
                     visible: lastDownload.status === 1 || lastDownload.status === 2
                 }
-
-                Text {
-                    visible: lastDownload.status === 3 && lastDownload.error
-                    text: "Error: " + (lastDownload.error || "")
-                    color: "#ea4335"
-                    font.pixelSize: 12
-                    wrapMode: Text.WordWrap
-                    Layout.fillWidth: true
-                }
             }
         }
 
-        // My files — local manifests
-        Text {
-            text: "My files"
-            font.pixelSize: 16
-            font.weight: Font.DemiBold
-            color: "#1f2d3d"
-        }
-
-        ListView {
-            id: listView
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            model: files
-            spacing: 8
-            clip: true
-
-            delegate: Rectangle {
-                width: listView.width
-                height: fileCol.implicitHeight + 20
-                color: "white"
-                border.color: "#dfe3e8"
-                border.width: 1
-                radius: 8
-
-                ColumnLayout {
-                    id: fileCol
-                    anchors.fill: parent
-                    anchors.margins: 12
-                    spacing: 6
-
-                    Text {
-                        text: modelData.filename && modelData.filename.length > 0
-                              ? modelData.filename
-                              : "(unnamed)"
-                        font.pixelSize: 14
-                        font.weight: Font.DemiBold
-                        color: "#1f2d3d"
-                        Layout.fillWidth: true
-                        elide: Text.ElideRight
-                    }
-
-                    Text {
-                        text: humanSize(modelData.datasetSize)
-                              + (modelData.mimetype ? "  ·  " + modelData.mimetype : "")
-                        color: "#888"
-                        font.pixelSize: 11
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 6
-
-                        TextField {
-                            Layout.fillWidth: true
-                            text: modelData.cid
-                            readOnly: true
-                            font.family: "monospace"
-                            font.pixelSize: 11
-                            selectByMouse: true
-                        }
-                        Button {
-                            text: "Copy CID"
-                            onClicked: {
-                                cidField.text = modelData.cid
-                            }
-                        }
-                        Button {
-                            text: "Remove"
-                            onClicked: {
-                                callFS("removeFile", [modelData.cid])
-                                refresh()
-                            }
-                        }
-                    }
-                }
-            }
-
-            Label {
-                anchors.centerIn: parent
-                visible: files.length === 0
-                text: storageStatus === 2
-                      ? "No files yet. Upload one above."
-                      : "Start the storage node to see your files."
-                color: "#9aa5b1"
-            }
-        }
+        // Spacer so Upload + Download cards don't stretch to fill the window.
+        Item { Layout.fillHeight: true }
     }
-
-    // Poll every 500ms while anything is in flight, otherwise 1.5s. A real
-    // app would subscribe to filesharing events via logos.onModuleEvent.
-    Timer {
-        interval: (lastUpload.status === 1 || lastDownload.status === 1) ? 500 : 1500
-        running: true
-        repeat: true
-        onTriggered: refresh()
-    }
-
-    Component.onCompleted: refresh()
 }

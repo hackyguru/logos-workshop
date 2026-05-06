@@ -50,9 +50,9 @@ QString variantToJson(const QJsonObject& obj)
     return QString::fromUtf8(QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }
 
-// Storage config. Bootstrap SPRs sourced from the published Codex devnet
-// list at https://spr.codex.storage/devnet — without live peer seeds
-// libstorage's discovery layer spins indefinitely looking for peers.
+// Minimal config — matches storage_module's integration-test config exactly.
+// logos-yolo also uses just `data-dir`; the storage_module defaults for
+// listen-addrs, discovery, etc. are what we want.
 QString defaultStorageConfig()
 {
     const QString dataRoot = QDir::cleanPath(
@@ -60,16 +60,10 @@ QString defaultStorageConfig()
         + "/filesharing-storage");
     QDir().mkpath(dataRoot);
 
-    QJsonArray bootstrap;
-    bootstrap.append("spr:CiUIAhIhA-VlcoiRm02KyIzrcTP-ljFpzTljfBRRKTIvhMIwqBqWEgIDARpJCicAJQgCEiED5WVyiJGbTYrIjOtxM_6WMWnNOWN8FFEpMi-EwjCoGpYQs8n8wQYaCwoJBHTKubmRAnU6GgsKCQR0yrm5kQJ1OipHMEUCIQDwUNsfReB4ty7JFS5WVQ6n1fcko89qVAOfQEHixa03rgIgan2-uFNDT-r4s9TOkLe9YBkCbsRWYCHGGVJ25rLj0QE");
-    bootstrap.append("spr:CiUIAhIhApIj9p6zJDRbw2NoCo-tj98Y760YbppRiEpGIE1yGaMzEgIDARpJCicAJQgCEiECkiP2nrMkNFvDY2gKj62P3xjvrRhumlGISkYgTXIZozMQvcz8wQYaCwoJBAWhF3WRAnVEGgsKCQQFoRd1kQJ1RCpGMEQCIFZB84O_nzPNuViqEGRL1vJTjHBJ-i5ZDgFL5XZxm4HAAiB8rbLHkUdFfWdiOmlencYVn0noSMRHzn4lJYoShuVzlw");
-    bootstrap.append("spr:CiUIAhIhApqRgeWRPSXocTS9RFkQmwTZRG-Cdt7UR2N7POoz606ZEgIDARpJCicAJQgCEiECmpGB5ZE9JehxNL1EWRCbBNlEb4J23tRHY3s86jPrTpkQj8_8wQYaCwoJBAXfEfiRAnVOGgsKCQQF3xH4kQJ1TipGMEQCIGWJMsF57N1iIEQgTH7IrVOgEgv0J2P2v3jvQr5Cjy-RAiAy4aiZ8QtyDvCfl_K_w6SyZ9csFGkRNTpirq_M_QNgKw");
-
     QJsonObject cfg;
-    cfg["data-dir"]       = dataRoot;
-    cfg["bootstrap-node"] = bootstrap;
-    cfg["log-level"]      = "INFO";
-    cfg["log-file"]       = dataRoot + "/storage.log";
+    cfg["data-dir"]  = dataRoot;
+    cfg["log-level"] = "INFO";
+    cfg["log-file"]  = dataRoot + "/storage.log";
     return variantToJson(cfg);
 }
 
@@ -133,19 +127,19 @@ void FileSharingPlugin::doInitAndStart()
     const QString cfg = defaultStorageConfig();
     qInfo().noquote() << "FileSharingPlugin: storage.init cfg =" << cfg;
 
+    // storage_module is shared — another module (e.g. storage_ui) may have
+    // already initialised + started it, in which case our init() returns
+    // false. That's not fatal: try start() anyway. If start() also fails we
+    // have a real problem; if it succeeds (or libstorage was already running),
+    // we're good. Mirrors stash-basecamp's fall-through pattern.
     const bool initOk = m_storage->init(cfg);
-    qInfo() << "FileSharingPlugin: init() returned" << initOk;
-    if (!initOk) {
-        m_lastError = "storage_module.init() rejected the config";
-        qWarning().noquote() << "FileSharingPlugin:" << m_lastError;
-        setStorageStatus(3);
-        return;
-    }
+    qInfo() << "FileSharingPlugin: init() returned" << initOk
+            << (initOk ? "" : "(may already be initialised by another module)");
 
     const bool startOk = m_storage->start();
     qInfo() << "FileSharingPlugin: start() returned" << startOk;
-    if (!startOk) {
-        m_lastError = "storage_module.start() rejected";
+    if (!initOk && !startOk) {
+        m_lastError = "storage_module.init() and start() both rejected";
         qWarning().noquote() << "FileSharingPlugin:" << m_lastError;
         setStorageStatus(3);
         return;
@@ -200,7 +194,11 @@ QString FileSharingPlugin::uploadFile(const QString& fileUrl)
     m_upload.status   = 1;
 
     qInfo().noquote() << "FileSharingPlugin: uploading" << m_upload.filename;
-    const LogosResult r = m_storage->uploadUrl(QVariant::fromValue(url), 64 * 1024);
+    // Match storage_ui's call shape exactly: pass the raw QUrl, let
+    // storage_module use its declared default chunkSize (1024*64). Wrapping
+    // in QVariant or passing chunkSize explicitly works for the first call
+    // but corrupts the second one — IPC arg-type mismatch.
+    const LogosResult r = m_storage->uploadUrl(url);
     if (!r.success) {
         m_upload.status = 3;
         m_upload.error  = r.error.toString();

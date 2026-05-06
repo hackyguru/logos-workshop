@@ -6,7 +6,7 @@
   "description": "Upload / download / remove files via logos-storage — see and copy CIDs",
   "view": "Main.qml",
   "icon": "icons/filesharing.png",
-  "dependencies": ["filesharing"],
+  "dependencies": ["storage_module"],
 
   "nix": {
     "packages": {
