@@ -208,24 +208,19 @@ bool PollingPlugin::closePoll(const QString& pollId)
     return true;
 }
 
-bool PollingPlugin::vote(const QString& pollId, const QString& yes)
+bool PollingPlugin::vote(const QString& pollId, bool yes)
 {
     if (!m_polls.contains(pollId)) return false;
     if (!m_started) return false;
 
-    // The Basecamp prerelease IPC delivers QML args as QString. Accept
-    // "true" / "1" as yes and anything else as no.
-    const QString lower = yes.trimmed().toLower();
-    const bool yesB = (lower == "true" || lower == "1");
-
     // Optimistic local update — also covers offline use.
-    m_polls[pollId].votes.insert(m_voterId, yesB);
-    emit eventResponse("voteReceived", QVariantList{ pollId, m_voterId, yesB });
+    m_polls[pollId].votes.insert(m_voterId, yes);
+    emit eventResponse("voteReceived", QVariantList{ pollId, m_voterId, yes });
 
     QJsonObject obj;
     obj["type"]  = "vote";
     obj["voter"] = m_voterId;
-    obj["yes"]   = yesB;
+    obj["yes"]   = yes;
     // Piggyback the question — joiners who missed the announce still learn
     // it as soon as they see any vote come in.
     if (!m_polls[pollId].question.isEmpty()) {

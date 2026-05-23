@@ -37,7 +37,7 @@ public:
 
     Q_INVOKABLE bool    openPoll(const QString& pollId, const QString& question) override;
     Q_INVOKABLE bool    closePoll(const QString& pollId) override;
-    Q_INVOKABLE bool    vote(const QString& pollId, const QString& yes) override;
+    Q_INVOKABLE bool    vote(const QString& pollId, bool yes) override;
 
     Q_INVOKABLE QString listPolls() override;
     Q_INVOKABLE QString tally(const QString& pollId) override;

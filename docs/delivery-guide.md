@@ -149,8 +149,10 @@ bool YourPlugin::bringUpDelivery()
 
     m_deliveryClient->onEvent(m_deliveryObject, "connectionStateChanged",
         [this](const QString&, const QVariantList& data) {
-            if (!data.isEmpty() &&
-                data[0].toString().compare("Connected", Qt::CaseInsensitive) == 0) {
+            if (data.isEmpty()) return;
+            // Match "Connected" AND "PartiallyConnected" — current
+            // liblogosdelivery emits both depending on per-shard connectivity.
+            if (data[0].toString().contains("Connected", Qt::CaseInsensitive)) {
                 m_connectionState = 2;
             }
         });
@@ -208,11 +210,11 @@ A call that returns `void` in the table returns an empty `QVariant` — check
 
 | Method | Args | Returns | Purpose |
 | --- | --- | --- | --- |
-| `createNode` | `QString cfg` | `bool` | Initialise the node from a JSON config. Call **exactly once per process** before anything else. |
-| `start` | — | `bool` | Connect to peers, start the gossipsub engine. Emits `connectionStateChanged` as the connection progresses. |
-| `stop` | — | `bool` | Disconnect. Safe to `start()` again afterwards. |
-| `subscribe` | `QString topic` | `bool` | Start receiving `messageReceived` events for this content topic. Multiple subscribes are fine; duplicates are deduped internally. |
-| `unsubscribe` | `QString topic` | `bool` | Stop receiving for this topic. |
+| `createNode` | `QString cfg` | `bool` / `LogosResult` | Initialise the node from a JSON config. Call **exactly once per process** before anything else (see Gotcha #8 for Stop+Start). |
+| `start` | — | `bool` / `LogosResult` | Connect to peers, start the gossipsub engine. Emits `connectionStateChanged` as the connection progresses. |
+| `stop` | — | `bool` / `LogosResult` | Disconnect. Safe to `start()` again afterwards. |
+| `subscribe` | `QString topic` | `bool` / `LogosResult` | Start receiving `messageReceived` events for this content topic. Multiple subscribes are fine; duplicates are deduped internally. |
+| `unsubscribe` | `QString topic` | `bool` / `LogosResult` | Stop receiving for this topic. |
 | `send` | `QString topic, QString payload` | `LogosResult` | Publish a message. Returns a result with a `requestId` you can correlate with later `message_sent` / `message_propagated` / `message_error` events. Via `invokeRemoteMethod` it comes back as a `QVariant` — `.isValid() == false` means the RPC itself failed (not the send). |
 | `getAvailableConfigs` | — | `QString` | List available preset names (e.g. `["logos.dev", "twn"]`). |
 | `getAvailableNodeInfoIDs` | — | `QString` | IDs of introspection data you can query. |
@@ -228,6 +230,25 @@ createNode (once) → start → [subscribe/send/unsubscribe]* → stop
 Calling `send`/`subscribe` before `createNode` returns `false` with the log
 line *"Cannot … — context not initialized. Call createNode first."*
 
+**Return-type evolution.** Older `delivery_module` builds returned a plain
+`bool` from `createNode` / `start` / `stop` / `subscribe` / `unsubscribe`.
+Newer builds return a `LogosResult` struct from these too (matching `send`).
+The QVariant comes back wrapping whichever the current build uses, and
+`QVariant::toBool()` always evaluates to `false` on the wrapped struct — so
+calling `.toBool()` directly will silently look like a failure. Unwrap
+safely with `canConvert<LogosResult>()` and fall back to the bool path:
+
+```cpp
+const QVariant r = client->invokeRemoteMethod("delivery_module", "start");
+if (!r.isValid()) { /* RPC itself failed */ }
+else if (r.canConvert<LogosResult>()) {
+    const LogosResult lr = r.value<LogosResult>();
+    if (!lr.success) { /* lr.error has the reason */ }
+} else if (!r.toBool()) {
+    /* legacy bool return — call failed */
+}
+```
+
 ---
 
 ## Event reference
@@ -242,7 +263,7 @@ eventName, QVariantList data)` signal. Subscribe to a specific event with
 | `messageSent` | `[requestId, messageHash, timestamp]` | The send service accepted and queued your message. |
 | `messagePropagated` | `[requestId, messageHash, timestamp]` | Your message was **delivered to neighboring peers on the network**. This is the "receipt" that proves the broadcast went out. |
 | `messageError` | `[requestId, messageHash, error, timestamp]` | A send failed — `error` is a human-readable reason. |
-| `connectionStateChanged` | `[statusString, timestamp]` | Connection state changed. `statusString` is `"Connected"` / `"Connecting"` / `"Disconnected"` (case-sensitive in practice — use `Qt::CaseInsensitive` compares to be safe). |
+| `connectionStateChanged` | `[statusString, timestamp]` | Connection state changed. `statusString` is `"Connected"` / `"PartiallyConnected"` / `"Connecting"` / `"Disconnected"`. `"PartiallyConnected"` was added when the Waku node started surfacing per-shard connectivity independently — treat it as a healthy state. Use `contains("Connected", Qt::CaseInsensitive)` to match both green states in one check. |
 
 **Typical lifecycle of a send**:
 
@@ -514,6 +535,60 @@ You called `subscribe`/`send` before `createNode`. Check your init order.
 
 One decode for text payloads, two for binary. See
 [Payload encoding](#payload-encoding).
+
+### 8. `createNode` is once-per-process — even across Stop+Start
+
+The "exactly once per process" rule isn't just at startup. After a `stop()`,
+calling `createNode` a second time returns an error ("context already
+initialized") and surfaces as a user-visible error toast. Track a `bool
+m_createNodeDone` on your plugin and skip `createNode` on subsequent
+`start()` cycles — go straight to registering handlers and calling
+`start()`:
+
+```cpp
+if (!m_createNodeDone) {
+    if (!invokeBool("createNode", "createNode", cfg)) { /* … */ }
+    m_createNodeDone = true;
+}
+// register handlers, then start()
+```
+
+### 9. Don't call back into `delivery_module` from inside its event handler
+
+If a `messageReceived` callback needs to publish a reply (e.g. a
+request/response pattern over pub/sub), invoking `send` *synchronously*
+from inside the handler re-enters `delivery_module` while it's still
+dispatching the inbound event — and deadlocks the main thread. Defer the
+reply with `QTimer::singleShot(0, …)` so the dispatch can finish first:
+
+```cpp
+QTimer::singleShot(0, this, [this, topic, payload]() {
+    m_deliveryClient->invokeRemoteMethod(
+        "delivery_module", "send", topic, payload);
+});
+```
+
+### 10. `logos.dev` preset's bootstrap peers don't currently handshake
+
+As of this writing, the `logos.dev` preset ships with bootstrap peer IDs
+that no longer match the running peers' actual IDs, so the libp2p noise
+handshake fails and Waku drops them. `connectionStateChanged` therefore
+never reaches `"Connected"` against the public `logos.dev` network even
+though `start()` itself succeeds.
+
+If your UX needs a green light to unblock the user, optimistically flip
+your local state to "connected" right after `start()` returns and let
+the event handler upgrade or downgrade later if peers actually arrive:
+
+```cpp
+if (!invokeBool("start", "start")) { setDeliveryStatus(3); return false; }
+m_started = true;
+if (m_deliveryStatus < 2) setDeliveryStatus(2);   // optimistic
+```
+
+Self-echo over gossipsub still works (you receive your own publishes),
+so a single-peer workshop demo functions fine; you just don't see real
+remote peers until upstream rotates the preset's bootstrap IDs.
 
 ---
 
