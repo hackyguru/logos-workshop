@@ -520,6 +520,16 @@ and `connectionStateChanged` is usually the one most easily missed.
 Both `tcpPort` (60000) and `discv5UdpPort` (9000) need different values
 for a second instance. Override both — see the next section.
 
+The env var name is **per-app** — whatever the plugin reads via
+`qEnvironmentVariableIntValue(...)`. There is no shared "Basecamp port
+override"; if your second instance still fails with `failed to open udp
+port: (48) Address already in use`, the env var you set is being read by
+some other plugin (or none), not the one you're trying to move. Check
+the plugin's source to confirm the var name. Some plugins (e.g. the
+workshop's `shared_color`) additionally hard-code a binary
+Instance A / Instance B model — only two same-machine instances are
+supported, distinguished by whether the env var is set.
+
 ### 5. First build is slow
 
 `logos-delivery-module`'s source closure pulls the Nim toolchain,

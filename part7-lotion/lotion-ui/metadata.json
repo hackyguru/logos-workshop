@@ -1,0 +1,24 @@
+{
+  "name": "lotion_ui",
+  "version": "0.1.0",
+  "type": "ui_qml",
+  "category": "example",
+  "description": "Lotion — a local-first, Notion-style writing workspace with optional publishing to logos-storage",
+  "view": "Main.qml",
+  "icon": "icons/lotion.png",
+  "dependencies": ["lotion", "storage_module"],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}

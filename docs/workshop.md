@@ -1666,6 +1666,16 @@ if (customPort > 0) {
 So `POLLING_TCPPORT=60001` puts the second instance on `tcpPort 60001` and
 `discv5UdpPort 9001` — no collision.
 
+> **The env var is per-app, not global.** Each app picks its own env name
+> for the port override. `POLLING_TCPPORT` only affects part 3's polling
+> plugin. Part 6's shared_color plugin reads `SHARED_COLOR_TCPPORT`
+> instead, and is additionally hard-coded to a binary **Instance A /
+> Instance B** model (two pre-baked nodeKeys + reciprocal `staticNodes`,
+> as a workaround for stale `logos.dev` bootstrap peers). So shared_color
+> supports exactly two same-machine instances — no env → A on 60000, env
+> set → B on whatever port you pass. Mixing env vars across apps in one
+> launch is fine (`--env POLLING_TCPPORT=60001 --env SHARED_COLOR_TCPPORT=60001`).
+
 **Launching both:**
 
 ```bash

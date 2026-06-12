@@ -1,6 +1,4 @@
-# Part 4 — File sharing (work in progress)
-
-> 🚧 **Status: not yet in a working state.** The code here is structurally complete and follows the right integration patterns for `storage_module`, but end-to-end upload/download doesn't currently work in this Basecamp build. Ship-worthy fix is pending upstream.
+# Part 4 — File sharing
 
 ## What's here
 

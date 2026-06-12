@@ -396,6 +396,14 @@ nohup open -W -n "/path/to/Basecamp.app" \
   --env POLLING_TCPPORT=60001 > /dev/null 2>&1 &
 ```
 
+Env var is **per-app** — `POLLING_TCPPORT` only moves part 3's polling
+plugin. Part 6's shared_color reads `SHARED_COLOR_TCPPORT` and is
+hard-coded to a binary **Instance A / Instance B** model (two pre-baked
+nodeKeys, reciprocal `staticNodes`) — two same-machine instances max.
+If a second instance fails with `failed to open udp port: (48) Address
+already in use`, you set the wrong env var name. Set both when running
+multi-app: `--env POLLING_TCPPORT=60001 --env SHARED_COLOR_TCPPORT=60001`.
+
 ## Common delivery_module gotchas
 
 - **`requestObject` returns `LogosObject*`**, not `QObject*`. Include
