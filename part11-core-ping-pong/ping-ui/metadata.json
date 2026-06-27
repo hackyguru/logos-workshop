@@ -1,0 +1,24 @@
+{
+  "name": "ping_ui",
+  "version": "0.1.0",
+  "type": "ui_qml",
+  "category": "example",
+  "description": "Ping ⟷ Pong UI — fire a ping into a content topic and watch the round-trip to a remote logoscore-CLI ponger",
+  "view": "Main.qml",
+  "icon": "icons/ping.png",
+  "dependencies": ["ping"],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}

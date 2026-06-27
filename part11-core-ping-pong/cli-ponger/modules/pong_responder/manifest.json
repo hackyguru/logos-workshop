@@ -1,2 +1,0 @@
-{ "name":"pong_responder","version":"0.1.0","type":"core","dependencies":["delivery_module"],
-  "main":{"darwin-arm64-dev":"pong_responder_plugin.dylib","darwin-arm64":"pong_responder_plugin.dylib"} }
