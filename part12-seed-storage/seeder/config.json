@@ -17,5 +17,5 @@
     "spr:CiUIAhIhAgX6x7NWUskBQ1a5CvhQ9qe6nAcgE-C6GLjAfnpyRK_6EgIDARo7CicAJQgCEiECBfrHs1ZSyQFDVrkK-FD2p7qcByAT4LoYuMB-enJEr_oQltv10QYaCgoIBKX194YGH5AqRjBEAiBskHSppya4Dah6QGTlYnvAG72mUbEyxO6QfDW5cNOTygIgVmHL40bgnGqxpZtDGI0jyNo5mk_DkriCmoDpreZ6x5o"
   ],
   "data-dir": "./storage-data",
-  "mix-pool": "/Users/guru/Desktop/demo/logos-workshop/part12-seed-storage/seeder/mix-pool.json"
+  "mix-pool": "./mix-pool.json"
 }

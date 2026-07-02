@@ -68,10 +68,10 @@ if [[ -z "${LOGOSCORE:-}" ]]; then
     command -v logoscore >/dev/null 2>&1 && _cands+=("$(command -v logoscore)")
     while IFS= read -r _c; do _cands+=("$_c"); done \
         < <(ls -d /nix/store/*-logos-logoscore-cli/bin/logoscore 2>/dev/null)
-    for _c in "${_cands[@]}"; do
+    for _c in ${_cands[@]+"${_cands[@]}"}; do
         [[ -x "$_c" ]] && _ls_compatible "$_c" && { LOGOSCORE="$_c"; break; }
     done
-    [[ -z "${LOGOSCORE:-}" ]] && for _c in "${_cands[@]}"; do
+    [[ -z "${LOGOSCORE:-}" ]] && for _c in ${_cands[@]+"${_cands[@]}"}; do
         [[ -x "$_c" ]] && { LOGOSCORE="$_c"; break; }
     done
 fi
