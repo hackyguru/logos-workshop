@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "relays": [
+    {
+      "peerId": "16Uiu2HAm1522ucToKCsrwrusNHbtkww8YPBBqF2e3RWHMf6EREe6",
+      "multiAddr": "/ip4/165.245.249.5/tcp/8080",
+      "mixPubKey": "6ec39559bd7ca3ca099852a1d41557d6111b77114c713558dcaf3ec819b3114e",
+      "libp2pPubKey": "0253db996f49d3cb4323aa4857e0be5efbc54c20cdfd58a1f08dd94ce78eb9fe6b"
+    },
+    {
+      "peerId": "16Uiu2HAmNLtP38EA2CMwqsoSninKFgA4sxcsV7AgPnR49dqDuTFw",
+      "multiAddr": "/ip4/164.92.241.253/tcp/8080",
+      "mixPubKey": "cf5e1396edb26b6e42a48b979108f481fa1737184a33252724977ac9b2bf995a",
+      "libp2pPubKey": "038ff1aa1fc4dc70e757819b7b5e7d2c202ebf4dd4c5c0e81a5a07d43868ab2fea"
+    },
+    {
+      "peerId": "16Uiu2HAkydPnHVbxBGsrxidSwL4TzT2vRkbiEzFTM1hNSG9HisUG",
+      "multiAddr": "/ip4/46.101.112.201/tcp/8080",
+      "mixPubKey": "2f95107b6db1f5eaebc6ae06e96539d9c66da0ac71daec5de17788dad1faac43",
+      "libp2pPubKey": "023e6f66dc8debd301d5c98a8676f1954a38b29eca7de2b5b0c8a98caa410f8edd"
+    },
+    {
+      "peerId": "16Uiu2HAkuq1ouxs1ACX8kMBykVQML9DkenLB6zYVf9sJjS8tvbr1",
+      "multiAddr": "/ip4/165.245.247.134/tcp/8080",
+      "mixPubKey": "cd28b4fd848bd064fe68c2ff524f10608809876997bf382ef7e1aadfa3c9a115",
+      "libp2pPubKey": "0205fac7b35652c9014356b90af850f6a7ba9c072013e0ba18b8c07e7a7244affa"
+    }
+  ]
+}

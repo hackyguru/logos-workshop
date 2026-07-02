@@ -1,0 +1,9 @@
+# Assembled at runtime by setup-modules.sh (large platform binaries, machine-specific)
+modules/
+# The storage node's local repo (seeded blocks, keys, DHT state)
+storage-data/
+# Logs / scratch
+*.log
+files/
+# our CID->filename sidecar (runtime state)
+seeded-index.json
