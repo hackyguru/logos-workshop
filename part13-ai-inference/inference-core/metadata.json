@@ -1,0 +1,23 @@
+{
+  "name": "inference",
+  "version": "0.1.0",
+  "type": "core",
+  "category": "example",
+  "description": "AI inference over logos-delivery — sends prompts into a content topic and receives model responses from a remote provider",
+  "main": "inference_plugin",
+  "dependencies": ["delivery_module"],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}

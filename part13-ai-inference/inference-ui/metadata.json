@@ -1,0 +1,24 @@
+{
+  "name": "inference_ui",
+  "version": "0.1.0",
+  "type": "ui_qml",
+  "category": "example",
+  "description": "AI Inference UI — send a prompt into a content topic and watch a remote logoscore-CLI provider (ollama) answer",
+  "view": "Main.qml",
+  "icon": "icons/inference.png",
+  "dependencies": ["inference"],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}

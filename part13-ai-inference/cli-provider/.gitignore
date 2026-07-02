@@ -1,0 +1,4 @@
+# Assembled at runtime by setup-modules.sh (large platform binaries, machine-specific)
+modules/
+# Daemon / provider logs
+*.log

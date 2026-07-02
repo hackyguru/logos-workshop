@@ -1,0 +1,23 @@
+{
+  "name": "inference_provider",
+  "version": "0.1.0",
+  "type": "core",
+  "category": "example",
+  "description": "Headless AI inference provider for the logoscore CLI — subscribes to a content topic, runs ollama (tinyllama) on each prompt, and sends back the response",
+  "main": "inference_provider_plugin",
+  "dependencies": ["delivery_module"],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}
