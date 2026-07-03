@@ -327,8 +327,16 @@ Item {
                         return m
                     }
                     textRole: "text"
+                    // Bind the shown selection to the backend's actual choice, so
+                    // the 1s poll (which rebuilds `model`) can't reset it to Auto.
+                    // Re-evaluates when model or preferredProvider changes.
+                    currentIndex: {
+                        for (var i = 0; i < model.length; i++)
+                            if (model[i].fp === preferredProvider) return i
+                        return 0   // preferred not live → show Auto
+                    }
                     onActivated: {
-                        callInf("setPreferredProvider", [model[currentIndex].fp])
+                        callInf("setPreferredProvider", [model[currentIndex].fp || ""])
                         refreshIdentity()
                     }
                 }

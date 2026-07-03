@@ -317,8 +317,18 @@ void ProviderPlugin::handleMessageReceived(const QVariantList& data)
     }
     if (prompt.isEmpty()) return;
 
+    // Dedup concurrent duplicate delivery: gossipsub can redeliver the same
+    // message, and we don't want to run ollama twice (and double-count load)
+    // for one id already in flight. (An id re-sent AFTER we've answered is
+    // allowed through — that's a legitimate retry when our reply was lost.)
+    if (m_inflightIds.contains(id)) {
+        qDebug() << "ProviderPlugin: duplicate in-flight prompt" << id << "— ignoring";
+        return;
+    }
+
     ++m_promptsSeen;
     ++m_inflight;
+    m_inflightIds.insert(id);
     m_lastPromptId = id;
     m_lastFrom     = fromLabel;
     qDebug() << "ProviderPlugin: prompt" << id << "from" << fromLabel
@@ -378,6 +388,20 @@ void ProviderPlugin::runInference(const QString& id, const QString& replyPkB64,
             sendResponse(id, replyPkB64, text.trimmed(), topic);
         });
 
+    // If curl can't even start (missing binary), QProcess emits errorOccurred
+    // and NOT finished — so the finished handler above would never run and
+    // m_inflight would leak. Handle that one case explicitly. (Crashes after a
+    // successful start still emit finished, so no double-send here.)
+    connect(proc, &QProcess::errorOccurred, this,
+        [this, proc, timer, id, replyPkB64, topic](QProcess::ProcessError err) {
+            if (err != QProcess::FailedToStart) return;
+            delete timer;
+            proc->deleteLater();
+            qWarning() << "ProviderPlugin: curl failed to start for" << id;
+            sendResponse(id, replyPkB64,
+                         "[inference failed — curl not found on the provider]", topic);
+        });
+
     // curl is at /usr/bin/curl on macOS / standard on Linux — on the base PATH.
     proc->start("curl", { "-sS", "--max-time", "180", url, "-d", "@-" });
     proc->write(body);
@@ -388,6 +412,7 @@ void ProviderPlugin::sendResponse(const QString& id, const QString& replyPkB64,
                                   const QString& text, const QString& topic)
 {
     if (m_inflight > 0) --m_inflight;
+    m_inflightIds.remove(id);
     if (!m_deliveryClient) return;
 
     QJsonObject resp;

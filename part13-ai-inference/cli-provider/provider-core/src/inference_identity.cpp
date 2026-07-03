@@ -228,9 +228,11 @@ bool InferenceIdentity::rootFromMnemonic(const QString& mnemonic,
 
 QString InferenceIdentity::createAccount(const QString& passphrase)
 {
-    if (isInitialized()) {
+    // isLocked() too: an encrypted key file that hasn't been unlocked still
+    // holds a real identity — overwriting it would destroy the seed.
+    if (isInitialized() || isLocked()) {
         qWarning() << "InferenceIdentity: identity already exists at" << keyFilePath()
-                   << "— refusing to overwrite. Delete the file to reset.";
+                   << "— refusing to overwrite. Unlock it, or delete the file to reset.";
         return QString();
     }
 
@@ -258,8 +260,9 @@ QString InferenceIdentity::createAccount(const QString& passphrase)
 
 bool InferenceIdentity::importAccount(const QString& mnemonic, const QString& passphrase)
 {
-    if (isInitialized()) {
-        qWarning() << "InferenceIdentity: identity already exists — refusing to overwrite";
+    if (isInitialized() || isLocked()) {
+        qWarning() << "InferenceIdentity: identity already exists — refusing to overwrite."
+                   << "Unlock it, or delete the key file to reset.";
         return false;
     }
 

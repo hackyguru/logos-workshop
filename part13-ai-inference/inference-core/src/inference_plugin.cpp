@@ -235,6 +235,13 @@ bool InferencePlugin::joinRoom(const QString& room)
         }
     }
     m_room = clean;
+    // The roster is per-room: announces heard in the old room's topic don't
+    // apply here, and sealing a prompt to one of them would send it to a
+    // provider not subscribed to this topic. Rebuild from fresh announces.
+    if (!m_providers.isEmpty()) {
+        m_providers.clear();
+        emit eventResponse("providersChanged", QVariantList{ 0 });
+    }
     qDebug() << "InferencePlugin: joined room" << m_room << "topic" << topicForRoom(m_room);
     emit eventResponse("roomChanged", QVariantList{ m_room });
     return true;
@@ -285,8 +292,8 @@ bool InferencePlugin::dispatchPrompt(PromptRec& rec)
     rec.sealed = false;
     QString providerFp;
     const ProviderRec* prov = pickProvider(providerFp, rec.tried);
-    QByteArray ephPk;
-    if (prov && InferenceIdentity::genEphemeralKeypair(rec.ephSk, ephPk)) {
+    QByteArray ephSk, ephPk;
+    if (prov && InferenceIdentity::genEphemeralKeypair(ephSk, ephPk)) {
         QJsonObject inner;
         inner["prompt"]  = rec.prompt;
         inner["replyPk"] = QString::fromLatin1(ephPk.toBase64());
@@ -294,8 +301,9 @@ bool InferencePlugin::dispatchPrompt(PromptRec& rec)
             prov->boxPk, QJsonDocument(inner).toJson(QJsonDocument::Compact));
         if (!sealed.isEmpty()) {
             rec.sealed   = true;
-            rec.provider = providerFp;   // who we asked (confirmed on answer)
+            rec.provider = providerFp;   // most recent provider asked
             rec.tried << providerFp;
+            rec.ephSks << ephSk;         // keep — an earlier provider may still answer
             obj["v"]   = 2;
             obj["to"]  = providerFp;
             obj["box"] = QString::fromLatin1(sealed.toBase64());
@@ -337,10 +345,15 @@ QString InferencePlugin::sendPrompt(const QString& prompt)
     rec.sentMs = nowMs();
 
     if (!dispatchPrompt(rec)) {
-        qWarning() << "InferencePlugin: prompt rejected — encryption required"
+        // requireEncryption is on and no live provider to seal to. Record it as
+        // a failed exchange (not a silent drop) so the UI shows why nothing was
+        // sent instead of appearing to swallow the prompt.
+        qWarning() << "InferencePlugin: prompt not sent — encryption required"
                    << "but no live provider in the roster";
-        emit eventResponse("promptRejected", QVariantList{ rec.id });
-        return QString();
+        rec.failed = true;
+        m_prompts.prepend(rec);
+        emit eventResponse("promptFailed", QVariantList{ rec.id });
+        return rec.id;
     }
 
     m_prompts.prepend(rec);
@@ -360,8 +373,9 @@ void InferencePlugin::sweepPending()
         if (now - p.lastSendMs < m_timeoutMs) continue;
 
         if (p.retries >= m_maxRetries) {
+            // Mark failed but KEEP p.ephSks: a slow provider's sealed answer can
+            // still arrive and un-fail the prompt (handleResponse handles that).
             p.failed = true;
-            p.ephSk.clear();
             qWarning() << "InferencePlugin: prompt" << p.id << "failed after"
                        << p.retries << "retries";
             emit eventResponse("promptFailed", QVariantList{ p.id });
@@ -371,7 +385,6 @@ void InferencePlugin::sweepPending()
         if (!dispatchPrompt(p)) {
             // requireEncryption and nobody left to try — fail immediately.
             p.failed = true;
-            p.ephSk.clear();
             emit eventResponse("promptFailed", QVariantList{ p.id });
         }
     }
@@ -469,6 +482,17 @@ void InferencePlugin::handleAnnounce(const QJsonObject& obj)
         return;
     }
 
+    // Freshness: reject stale/replayed announces. The signed `ts` must be near
+    // now (±60s for clock skew) — otherwise a captured announce could be
+    // replayed to keep a dead provider 'live' and black-hole prompts. This
+    // also bounds boxPk to the current epoch (rotation grace is only 1 day).
+    const qint64 skew = qAbs(nowMs() - ts);
+    if (ts <= 0 || skew > 60000) {
+        qWarning() << "InferencePlugin: stale announce from" << id
+                   << "(" << skew << "ms skew) — ignored";
+        return;
+    }
+
     const bool isNew = !m_providers.contains(id);
     ProviderRec& p = m_providers[id];
     p.signPk = signPk;
@@ -491,16 +515,26 @@ void InferencePlugin::handleResponse(const QJsonObject& obj)
     for (PromptRec& p : m_prompts) {
         if (p.id != id || p.answered) continue;
 
-        QString text, model;
+        QString text, model, answeredBy = from;
         if (obj.value("v").toInt() >= 2 && p.sealed) {
-            // Sealed response: only our per-prompt ephemeral key opens it, and
-            // the signature must match the provider we know under `from`.
-            const QString    boxB64 = obj.value("box").toString();
-            const QByteArray inner  = InferenceIdentity::openWith(
-                p.ephSk, QByteArray::fromBase64(boxB64.toLatin1()));
+            // Sealed response: try every ephemeral secret we used for this
+            // prompt (one per attempt), so a late answer from any tried
+            // provider still opens. Opening at all already proves it came from
+            // a provider we sealed to (they needed our reply key, sealed to
+            // THEIR box key) — the signature is a second, explicit check.
+            const QString boxB64 = obj.value("box").toString();
+            const QByteArray box = QByteArray::fromBase64(boxB64.toLatin1());
+            QByteArray inner;
+            for (const QByteArray& sk : p.ephSks) {
+                inner = InferenceIdentity::openWith(sk, box);
+                if (!inner.isEmpty()) break;
+            }
             if (inner.isEmpty()) return;   // not for us / tampered
 
-            const auto it = m_providers.constFind(from);
+            // Verify the signature against a provider we ACTUALLY asked
+            // (p.provider or any in p.tried), not the self-asserted `from`.
+            const QString signer = p.tried.contains(from) ? from : p.provider;
+            const auto it = m_providers.constFind(signer);
             if (it != m_providers.constEnd()) {
                 const QByteArray canon =
                     QString("inference/v1/response|%1|%2").arg(id, boxB64).toUtf8();
@@ -508,12 +542,16 @@ void InferencePlugin::handleResponse(const QJsonObject& obj)
                     QByteArray::fromBase64(obj.value("sig").toString().toLatin1());
                 if (!InferenceIdentity::verify(canon, sig, it->signPk)) {
                     qWarning() << "InferencePlugin: response" << id
-                               << "has a bad signature for" << from << "— dropped";
+                               << "bad signature for" << signer << "— dropped";
                     return;
                 }
+                answeredBy = signer;
             } else {
-                qWarning() << "InferencePlugin: response" << id << "from unknown provider"
-                           << from << "— accepted unverified (no announce seen)";
+                // Can't verify (provider expired from roster). The box already
+                // proves origin, so accept but keep the provider we asked.
+                answeredBy = p.provider;
+                qWarning() << "InferencePlugin: response" << id
+                           << "signer not in roster — accepted on box proof only";
             }
             const QJsonDocument d = QJsonDocument::fromJson(inner);
             if (!d.isObject()) return;
@@ -531,10 +569,10 @@ void InferencePlugin::handleResponse(const QJsonObject& obj)
         p.failed   = false;   // a late answer beats a timeout verdict
         p.rttMs    = nowMs() - p.sentMs;
         p.text     = text;
-        p.provider = from;
+        p.provider = answeredBy;
         p.model    = model;
-        p.ephSk.clear();   // reply channel closed — key no longer needed
-        qDebug() << "InferencePlugin: response for" << id << "from" << from
+        p.ephSks.clear();   // reply channel closed — keys no longer needed
+        qDebug() << "InferencePlugin: response for" << id << "from" << answeredBy
                  << (p.sealed ? "(sealed)" : "(plaintext)")
                  << "rtt" << p.rttMs << "ms" << "(" << p.text.size() << "chars )";
         emit eventResponse("responseReceived",

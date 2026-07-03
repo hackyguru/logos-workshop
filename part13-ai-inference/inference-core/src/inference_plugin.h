@@ -25,10 +25,12 @@ struct PromptRec {
     QString text;          // the model's reply
     QString provider;      // who answered (from the response payload)
     QString model;         // which model produced it
-    // E2E: the per-prompt ephemeral X25519 secret. The matching public key
-    // rides inside the sealed prompt; the provider seals its response to it.
-    // Discarded with the record — nothing links two prompts to each other.
-    QByteArray ephSk;
+    // E2E: one ephemeral X25519 secret PER attempt. Each sealed (re)send uses a
+    // fresh reply key, and a valid answer may come from any provider we tried —
+    // so we keep every secret and try them all when a response arrives (first
+    // answer wins). Cleared only once answered. The matching public keys ride
+    // inside the sealed prompts; nothing links two prompts to each other.
+    QList<QByteArray> ephSks;
     bool    sealed   = false;
     // Failover: which providers we've already tried, and when we last sent.
     QStringList tried;
