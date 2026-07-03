@@ -50,9 +50,21 @@ public:
 
     // Verified provider roster, from signed announces. Compact JSON array:
     // [{ id, model, load, ageMs, live }]. Prompts are sealed (E2E) to the
-    // least-loaded live provider automatically; with no live provider they
-    // fall back to the legacy plaintext broadcast.
+    // preferred provider if set and live, else the least-loaded live one;
+    // with no live provider they fall back to the legacy plaintext broadcast
+    // (unless requireEncryption is on). Unanswered prompts are retried on the
+    // next-best provider after a timeout (INFERENCE_TIMEOUT_MS, default 90s),
+    // then marked failed.
     Q_INVOKABLE virtual QString listProviders() = 0;
+
+    // Decrypt a passphrase-protected identity key file (identityStatus
+    // reports locked:true until this succeeds).
+    Q_INVOKABLE virtual bool    unlock(const QString& passphrase) = 0;
+    // Refuse to send plaintext: with no live provider, sendPrompt fails
+    // instead of broadcasting in the clear.
+    Q_INVOKABLE virtual bool    setRequireEncryption(bool required) = 0;
+    // Pin prompts to one provider fingerprint ("" = auto, least loaded).
+    Q_INVOKABLE virtual bool    setPreferredProvider(const QString& fingerprint) = 0;
 };
 
 #define InferenceInterface_iid "org.logos.InferenceInterface"

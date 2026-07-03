@@ -12,10 +12,13 @@ Item {
     property string myId: ""
     property string currentRoom: "lobby"
     property bool   identityInit: false
+    property bool   identityLocked: false
     property string identityFp: ""
     property string identityBackend: ""
     property string freshMnemonic: ""   // held only while the reveal popup is open
     property var    providers: []       // verified roster from signed announces
+    property bool   requireEncryption: false
+    property string preferredProvider: ""   // "" = auto
 
     // ── Logos bridge helpers ─────────────────────────────────────────
 
@@ -66,10 +69,26 @@ Item {
         const raw = unwrapRemote(callInf("identityStatus", []), "")
         try {
             const st = (typeof raw === "string") ? JSON.parse(raw) : raw
-            identityInit    = !!st.initialized
-            identityFp      = st.fingerprint || ""
-            identityBackend = st.backend || ""
+            identityInit      = !!st.initialized
+            identityLocked    = !!st.locked
+            identityFp        = st.fingerprint || ""
+            identityBackend   = st.backend || ""
+            requireEncryption = !!st.requireEncryption
+            preferredProvider = st.preferredProvider || ""
         } catch (e) { /* keep previous state */ }
+    }
+
+    function providerLabel(fp) {
+        for (var i = 0; i < providers.length; i++)
+            if (providers[i].id === fp)
+                return fp.substring(0, 10) + "… (" + providers[i].model + ")"
+        return fp.substring(0, 10) + "…"
+    }
+
+    function unlockIdentity() {
+        const ok = unwrapRemote(callInf("unlock", [unlockField.text]), false)
+        if (ok === true) unlockField.text = ""
+        refreshIdentity()
     }
 
     function createIdentity() {
@@ -169,9 +188,45 @@ Item {
         // Invisible helper so clicking the chip copies the full fingerprint.
         TextEdit { id: clipProxy; visible: false }
 
-        // Identity setup card (first run)
+        // Unlock card (passphrase-protected key file on disk)
         Rectangle {
-            visible: !identityInit
+            visible: identityLocked
+            Layout.fillWidth: true
+            Layout.preferredHeight: 76
+            color: "#eef4ff"
+            border.color: "#a9c7f0"; border.width: 1; radius: 8
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 12
+                spacing: 8
+                Text {
+                    text: "🔐 Identity locked"
+                    font.pixelSize: 14; font.weight: Font.DemiBold; color: "#234a86"
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    TextField {
+                        id: unlockField
+                        Layout.fillWidth: true
+                        echoMode: TextInput.Password
+                        placeholderText: "passphrase"
+                        font.pixelSize: 12
+                        onAccepted: unlockIdentity()
+                    }
+                    Button {
+                        text: "Unlock"
+                        enabled: unlockField.text.length > 0
+                        onClicked: unlockIdentity()
+                    }
+                }
+            }
+        }
+
+        // Identity setup card (first run — hidden once an identity exists or is locked)
+        Rectangle {
+            visible: !identityInit && !identityLocked
             Layout.fillWidth: true
             Layout.preferredHeight: idCol.implicitHeight + 24
             color: "#fff8e6"
@@ -246,6 +301,49 @@ Item {
             }
         }
 
+        // Provider picker + encryption policy (n→n routing controls)
+        Rectangle {
+            visible: identityInit
+            Layout.fillWidth: true
+            Layout.preferredHeight: 52
+            color: "#f8f9fa"
+            border.color: "#dfe3e8"; border.width: 1; radius: 8
+            RowLayout {
+                anchors.fill: parent
+                anchors.margins: 10
+                spacing: 8
+                Text { text: "Provider"; color: "#555"; font.pixelSize: 13 }
+                ComboBox {
+                    id: providerBox
+                    Layout.fillWidth: true
+                    font.pixelSize: 12
+                    // First entry = auto; the rest are live roster fingerprints.
+                    model: {
+                        var m = [{ text: "Auto (least loaded)", fp: "" }]
+                        for (var i = 0; i < providers.length; i++)
+                            if (providers[i].live)
+                                m.push({ text: providerLabel(providers[i].id),
+                                         fp: providers[i].id })
+                        return m
+                    }
+                    textRole: "text"
+                    onActivated: {
+                        callInf("setPreferredProvider", [model[currentIndex].fp])
+                        refreshIdentity()
+                    }
+                }
+                CheckBox {
+                    text: "Require 🔒"
+                    checked: requireEncryption
+                    font.pixelSize: 12
+                    onToggled: {
+                        callInf("setRequireEncryption", [checked])
+                        refreshIdentity()
+                    }
+                }
+            }
+        }
+
         // Prompt composer
         Rectangle {
             Layout.fillWidth: true
@@ -309,7 +407,8 @@ Item {
                 width: listView.width
                 height: col.implicitHeight + 22
                 color: "white"
-                border.color: modelData.answered ? "#34a853" : "#dfe3e8"
+                border.color: modelData.failed ? "#ea4335"
+                              : modelData.answered ? "#34a853" : "#dfe3e8"
                 border.width: 1
                 radius: 8
 
@@ -333,17 +432,22 @@ Item {
 
                     Rectangle { Layout.fillWidth: true; height: 1; color: "#eef1f4" }
 
-                    // The response (or a thinking indicator)
+                    // The response (thinking / answer / failed)
                     Text {
                         Layout.fillWidth: true
                         wrapMode: Text.WordWrap
                         textFormat: Text.PlainText
                         font.pixelSize: 13
-                        color: modelData.answered ? "#1f2d3d" : "#9a7700"
-                        text: modelData.answered
-                              ? ("🤖  " + (modelData.text && modelData.text.length > 0
-                                          ? modelData.text : "(empty response)"))
-                              : ("🤖  thinking… " + Math.floor(modelData.ageMs / 1000) + "s")
+                        color: modelData.failed ? "#c5221f"
+                               : modelData.answered ? "#1f2d3d" : "#9a7700"
+                        text: modelData.failed
+                              ? "⚠  no provider answered — try again or pick another provider"
+                              : modelData.answered
+                                ? ("🤖  " + (modelData.text && modelData.text.length > 0
+                                            ? modelData.text : "(empty response)"))
+                                : ("🤖  thinking… " + Math.floor(modelData.ageMs / 1000) + "s"
+                                   + (modelData.retries > 0
+                                      ? "  (retry " + modelData.retries + ")" : ""))
                     }
 
                     // Footer: sealed · model · provider · latency

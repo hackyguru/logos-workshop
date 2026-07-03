@@ -48,8 +48,21 @@ void ProviderPlugin::initLogos(LogosAPI* api)
 // once announces are signed — PR2).
 void ProviderPlugin::ensureIdentity()
 {
+    // A passphrase-protected key file needs IDENTITY_PASSPHRASE to unlock
+    // (headless nodes have no prompt). Wrong/missing passphrase falls through
+    // to the not-initialized path below, which refuses to overwrite the file.
+    if (m_identity && m_identity->isLocked()) {
+        const QString pass = qEnvironmentVariable("IDENTITY_PASSPHRASE");
+        if (!m_identity->unlock(pass)) {
+            qWarning() << "ProviderPlugin: identity key file is passphrase-protected"
+                       << "and IDENTITY_PASSPHRASE didn't unlock it — running with"
+                       << "the ephemeral id" << m_id;
+            return;
+        }
+    }
+
     if (!m_identity || m_identity->isInitialized()) {
-        if (m_identity) m_id = m_identity->fingerprint();
+        if (m_identity && m_identity->isInitialized()) m_id = m_identity->fingerprint();
         return;
     }
 
@@ -92,6 +105,7 @@ QString ProviderPlugin::identityStatus()
     QJsonObject o;
     const bool init = m_identity && m_identity->isInitialized();
     o["initialized"] = init;
+    o["locked"]      = m_identity && m_identity->isLocked();
     o["backend"]     = init ? m_identity->backend() : QString();
     o["fingerprint"] = init ? m_identity->fingerprint() : QString();
     o["signPk"]      = init ? QString::fromLatin1(m_identity->signPublicKey().toBase64()) : QString();

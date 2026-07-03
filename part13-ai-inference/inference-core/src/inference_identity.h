@@ -28,10 +28,14 @@ class LogosAPI;
 //     not loaded. importAccount() also accepts a 64-hex-char raw root for
 //     this backend, which is handy for scripted tests.
 //
-// At rest only the 32-byte root secret is stored (hex, chmod 600) at
+// At rest only the 32-byte root secret is stored (chmod 600) at
 //   $LOGOS_IDENTITY_DIR/identity-<role>.key   (default: ~/.logos-inference/)
 // The <role> ("provider" / "user") keeps a provider and a user on the same
-// machine from silently sharing one identity.
+// machine from silently sharing one identity. With a non-empty passphrase the
+// file is encrypted (PBKDF2-SHA256 → ChaCha20-Poly1305) and the identity
+// starts *locked*: isInitialized() is false until unlock(passphrase). The
+// same passphrase doubles as the BIP-39 "25th word", so both must match to
+// recreate the identity from the mnemonic.
 //
 // Key derivation: subkey = HMAC-SHA256(key = root, msg = domain). The root is
 // uniformly random, so HMAC as a PRF gives independent, domain-separated
@@ -44,6 +48,9 @@ public:
     InferenceIdentity(LogosAPI* api, const QString& role);
 
     bool    isInitialized() const { return m_root.size() == 32; }
+    // An encrypted key file exists but hasn't been decrypted yet.
+    bool    isLocked() const { return !isInitialized() && !m_lockedBlob.isEmpty(); }
+    bool    unlock(const QString& passphrase);
 
     // Create a fresh account. Returns the mnemonic — show it ONCE, it is never
     // stored — or "" on the seed-file backend (no mnemonic exists) and on
@@ -59,7 +66,10 @@ public:
     QByteArray appKey(const QByteArray& domain) const;
 
     QByteArray signPublicKey() const;                 // Ed25519, 32 bytes
-    QByteArray boxPublicKey() const;                  // X25519, 32 bytes
+    // X25519, 32 bytes — rotated daily (derived from root + epoch day), so a
+    // future compromise of the current box secret doesn't expose prompts
+    // sealed to earlier keys. The signing key (and fingerprint) never rotate.
+    QByteArray boxPublicKey() const;
     QByteArray sign(const QByteArray& msg) const;     // Ed25519 detached, 64 bytes
     static bool verify(const QByteArray& msg, const QByteArray& sig,
                        const QByteArray& publicKey);
@@ -89,22 +99,27 @@ public:
                            const QByteArray& plaintext);
     // Open with an explicit X25519 secret (e.g. a per-prompt ephemeral).
     static QByteArray openWith(const QByteArray& secretKey, const QByteArray& sealed);
-    // Open with this identity's box key.
+    // Open with this identity's box key — tries the current epoch's key, then
+    // the previous one (grace for prompts sealed to a just-rotated announce).
     QByteArray open(const QByteArray& sealed) const;
 
 private:
     QString keyFilePath() const;
     void    loadRoot();
-    bool    saveRoot(const QByteArray& root, const QString& backendName);
+    bool    saveRoot(const QByteArray& root, const QString& backendName,
+                     const QString& passphrase);
     bool    rootFromMnemonic(const QString& mnemonic, const QString& passphrase,
                              QByteArray& rootOut);
     QString callAccounts(const QString& method, const QVariantList& args,
                          bool* ok) const;
+    QByteArray boxSecret(qint64 epoch) const;
+    static qint64 boxEpoch();
 
     LogosAPI*  m_api;
     QString    m_role;
-    QByteArray m_root;      // 32 bytes once initialized
+    QByteArray m_root;        // 32 bytes once initialized
     QString    m_backend;
+    QByteArray m_lockedBlob;  // undecrypted key-file payload while locked
 };
 
 #endif

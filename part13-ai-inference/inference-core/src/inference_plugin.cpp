@@ -20,7 +20,10 @@ InferencePlugin::InferencePlugin(QObject* parent)
     : QObject(parent)
     , m_myId(QUuid::createUuid().toString(QUuid::WithoutBraces).left(8))
 {
-    qDebug() << "InferencePlugin: created, myId =" << m_myId;
+    const qint64 t = qEnvironmentVariableIntValue("INFERENCE_TIMEOUT_MS");
+    if (t > 0) m_timeoutMs = t;
+    qDebug() << "InferencePlugin: created, myId =" << m_myId
+             << "timeoutMs =" << m_timeoutMs;
 }
 
 InferencePlugin::~InferencePlugin() = default;
@@ -46,11 +49,38 @@ QString InferencePlugin::identityStatus()
     QJsonObject o;
     const bool init = m_identity && m_identity->isInitialized();
     o["initialized"] = init;
+    o["locked"]      = m_identity && m_identity->isLocked();
     o["backend"]     = init ? m_identity->backend() : QString();
     o["fingerprint"] = init ? m_identity->fingerprint() : QString();
     o["signPk"]      = init ? QString::fromLatin1(m_identity->signPublicKey().toBase64()) : QString();
     o["boxPk"]       = init ? QString::fromLatin1(m_identity->boxPublicKey().toBase64()) : QString();
+    // Session prompt-routing settings (piggybacked so the UI needs one poll).
+    o["requireEncryption"] = m_requireEncryption;
+    o["preferredProvider"] = m_preferredProvider;
     return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
+}
+
+bool InferencePlugin::unlock(const QString& passphrase)
+{
+    const bool ok = m_identity && m_identity->unlock(passphrase);
+    if (ok)
+        emit eventResponse("identityChanged", QVariantList{ m_identity->fingerprint() });
+    return ok;
+}
+
+bool InferencePlugin::setRequireEncryption(bool required)
+{
+    m_requireEncryption = required;
+    qDebug() << "InferencePlugin: requireEncryption =" << required;
+    return true;
+}
+
+bool InferencePlugin::setPreferredProvider(const QString& fingerprint)
+{
+    m_preferredProvider = fingerprint.trimmed();
+    qDebug() << "InferencePlugin: preferredProvider ="
+             << (m_preferredProvider.isEmpty() ? "(auto)" : m_preferredProvider);
+    return true;
 }
 
 QString InferencePlugin::createAccount(const QString& passphrase)
@@ -156,6 +186,12 @@ bool InferencePlugin::startDelivery()
     // connectionStateChanged can take a while (and is flaky on logos.dev's
     // bootstrap). Same rationale as part3-polling / part11.
     if (m_deliveryStatus < 2) setDeliveryStatus(2);
+
+    if (!m_sweepTimer) {
+        m_sweepTimer = new QTimer(this);
+        connect(m_sweepTimer, &QTimer::timeout, this, &InferencePlugin::sweepPending);
+    }
+    m_sweepTimer->start(3000);
     return true;
 }
 
@@ -163,6 +199,7 @@ bool InferencePlugin::stopDelivery()
 {
     if (!m_started) return true;
 
+    if (m_sweepTimer) m_sweepTimer->stop();
     if (m_deliveryClient) {
         if (m_subscribed) {
             m_deliveryClient->invokeRemoteMethod(
@@ -207,15 +244,26 @@ QString InferencePlugin::room() { return m_room; }
 
 // ── Prompt ───────────────────────────────────────────────────────────
 
-// Choose a provider from the verified roster: freshest announces only
-// (heard within 30s), lowest load first, most recently seen as tiebreak.
-const ProviderRec* InferencePlugin::pickProvider(QString& fpOut) const
+// Choose a provider from the verified roster: the preferred one if it's live
+// and not excluded, else freshest announces only (heard within 30s), lowest
+// load first, most recently seen as tiebreak.
+const ProviderRec* InferencePlugin::pickProvider(QString& fpOut,
+                                                 const QStringList& exclude) const
 {
     const qint64 cutoff = nowMs() - 30000;
+
+    if (!m_preferredProvider.isEmpty() && !exclude.contains(m_preferredProvider)) {
+        const auto it = m_providers.constFind(m_preferredProvider);
+        if (it != m_providers.constEnd() && it->lastSeenMs >= cutoff) {
+            fpOut = it.key();
+            return &it.value();
+        }
+    }
+
     const ProviderRec* best = nullptr;
     for (auto it = m_providers.constBegin(); it != m_providers.constEnd(); ++it) {
         const ProviderRec& p = it.value();
-        if (p.lastSeenMs < cutoff) continue;
+        if (p.lastSeenMs < cutoff || exclude.contains(it.key())) continue;
         if (!best || p.load < best->load ||
             (p.load == best->load && p.lastSeenMs > best->lastSeenMs)) {
             best  = &it.value();
@@ -223,6 +271,58 @@ const ProviderRec* InferencePlugin::pickProvider(QString& fpOut) const
         }
     }
     return best;
+}
+
+// Put one attempt of `rec` on the wire — sealed to the next untried provider,
+// or plaintext when none is available and plaintext is allowed. Shared by
+// sendPrompt (first attempt) and sweepPending (retries).
+bool InferencePlugin::dispatchPrompt(PromptRec& rec)
+{
+    QJsonObject obj;
+    obj["type"] = "prompt";
+    obj["id"]   = rec.id;
+
+    rec.sealed = false;
+    QString providerFp;
+    const ProviderRec* prov = pickProvider(providerFp, rec.tried);
+    QByteArray ephPk;
+    if (prov && InferenceIdentity::genEphemeralKeypair(rec.ephSk, ephPk)) {
+        QJsonObject inner;
+        inner["prompt"]  = rec.prompt;
+        inner["replyPk"] = QString::fromLatin1(ephPk.toBase64());
+        const QByteArray sealed = InferenceIdentity::seal(
+            prov->boxPk, QJsonDocument(inner).toJson(QJsonDocument::Compact));
+        if (!sealed.isEmpty()) {
+            rec.sealed   = true;
+            rec.provider = providerFp;   // who we asked (confirmed on answer)
+            rec.tried << providerFp;
+            obj["v"]   = 2;
+            obj["to"]  = providerFp;
+            obj["box"] = QString::fromLatin1(sealed.toBase64());
+        }
+    }
+    if (!rec.sealed) {
+        if (m_requireEncryption) return false;   // never send in the clear
+        // No verified provider heard from yet (or sealing failed): legacy
+        // plaintext broadcast, so the demo still works against old providers.
+        obj["from"]   = m_myId;
+        obj["ts"]     = rec.sentMs;
+        obj["prompt"] = rec.prompt;
+        rec.provider.clear();
+    }
+
+    rec.lastSendMs = nowMs();
+    const QString payload = QString::fromUtf8(
+        QJsonDocument(obj).toJson(QJsonDocument::Compact));
+    const QVariant r = m_deliveryClient->invokeRemoteMethod(
+        "delivery_module", "send", topicForRoom(m_room), payload);
+    if (!r.isValid()) {
+        qWarning() << "InferencePlugin: delivery_module.send RPC failed";
+    }
+    qDebug() << "InferencePlugin: sent" << (rec.sealed ? "sealed" : "plaintext")
+             << "prompt" << rec.id << "attempt" << (rec.retries + 1)
+             << (rec.sealed ? "provider " + rec.provider : QString());
+    return true;
 }
 
 QString InferencePlugin::sendPrompt(const QString& prompt)
@@ -236,54 +336,45 @@ QString InferencePlugin::sendPrompt(const QString& prompt)
     rec.prompt = text;
     rec.sentMs = nowMs();
 
-    QJsonObject obj;
-    obj["type"] = "prompt";
-    obj["id"]   = rec.id;
-
-    // E2E when we know a live provider: seal {prompt, replyPk} to its box key.
-    // On the wire that leaves only routing crumbs (to + id) — no prompt text,
-    // no sender id, and a fresh reply key each time so prompts are unlinkable.
-    QString providerFp;
-    const ProviderRec* prov = pickProvider(providerFp);
-    QByteArray ephPk;
-    if (prov && InferenceIdentity::genEphemeralKeypair(rec.ephSk, ephPk)) {
-        QJsonObject inner;
-        inner["prompt"]  = text;
-        inner["replyPk"] = QString::fromLatin1(ephPk.toBase64());
-        const QByteArray sealed = InferenceIdentity::seal(
-            prov->boxPk, QJsonDocument(inner).toJson(QJsonDocument::Compact));
-        if (!sealed.isEmpty()) {
-            rec.sealed   = true;
-            rec.provider = providerFp;   // who we asked (confirmed on answer)
-            obj["v"]   = 2;
-            obj["to"]  = providerFp;
-            obj["box"] = QString::fromLatin1(sealed.toBase64());
-        }
-    }
-    if (!rec.sealed) {
-        // No verified provider heard from yet (or sealing failed): legacy
-        // plaintext broadcast, so the demo still works against old providers.
-        obj["from"]   = m_myId;
-        obj["ts"]     = rec.sentMs;
-        obj["prompt"] = text;
-        rec.provider.clear();
+    if (!dispatchPrompt(rec)) {
+        qWarning() << "InferencePlugin: prompt rejected — encryption required"
+                   << "but no live provider in the roster";
+        emit eventResponse("promptRejected", QVariantList{ rec.id });
+        return QString();
     }
 
     m_prompts.prepend(rec);
-
-    const QString payload = QString::fromUtf8(
-        QJsonDocument(obj).toJson(QJsonDocument::Compact));
-    const QVariant r = m_deliveryClient->invokeRemoteMethod(
-        "delivery_module", "send", topicForRoom(m_room), payload);
-    if (!r.isValid()) {
-        qWarning() << "InferencePlugin: delivery_module.send RPC failed";
-    }
-
-    qDebug() << "InferencePlugin: sent" << (rec.sealed ? "sealed" : "plaintext")
-             << "prompt" << rec.id << "to" << topicForRoom(m_room)
-             << (rec.sealed ? "provider " + rec.provider : QString());
     emit eventResponse("promptSent", QVariantList{ rec.id, m_room });
     return rec.id;
+}
+
+// Timeout/retry sweep: a prompt unanswered for m_timeoutMs is re-sent to the
+// next-best provider (fresh ephemeral key, same id — first answer wins), up
+// to m_maxRetries; after that it's marked failed so the UI stops saying
+// "thinking…" about a dead provider.
+void InferencePlugin::sweepPending()
+{
+    const qint64 now = nowMs();
+    for (PromptRec& p : m_prompts) {
+        if (p.answered || p.failed) continue;
+        if (now - p.lastSendMs < m_timeoutMs) continue;
+
+        if (p.retries >= m_maxRetries) {
+            p.failed = true;
+            p.ephSk.clear();
+            qWarning() << "InferencePlugin: prompt" << p.id << "failed after"
+                       << p.retries << "retries";
+            emit eventResponse("promptFailed", QVariantList{ p.id });
+            continue;
+        }
+        ++p.retries;
+        if (!dispatchPrompt(p)) {
+            // requireEncryption and nobody left to try — fail immediately.
+            p.failed = true;
+            p.ephSk.clear();
+            emit eventResponse("promptFailed", QVariantList{ p.id });
+        }
+    }
 }
 
 // ── Query helpers ────────────────────────────────────────────────────
@@ -304,6 +395,8 @@ QString InferencePlugin::listExchanges()
         o["provider"] = p.provider;
         o["model"]    = p.model;
         o["sealed"]   = p.sealed;
+        o["failed"]   = p.failed;
+        o["retries"]  = p.retries;
         arr.append(o);
     }
     return QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact));
@@ -435,6 +528,7 @@ void InferencePlugin::handleResponse(const QJsonObject& obj)
         }
 
         p.answered = true;
+        p.failed   = false;   // a late answer beats a timeout verdict
         p.rttMs    = nowMs() - p.sentMs;
         p.text     = text;
         p.provider = from;

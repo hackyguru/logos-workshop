@@ -2,6 +2,7 @@
 #include "logos_api.h"
 #include "logos_api_client.h"
 
+#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -35,13 +36,78 @@ QString InferenceIdentity::keyFilePath() const
     return dir + "/identity-" + m_role + ".key";
 }
 
+// ChaCha20-Poly1305 one-shots shared by the key file (passphrase mode).
+static QByteArray aeadEncrypt(const QByteArray& key, const QByteArray& nonce,
+                              const QByteArray& pt)
+{
+    QByteArray out(pt.size() + 16, 0);
+    int len = 0, fin = 0;
+    EVP_CIPHER_CTX* c = EVP_CIPHER_CTX_new();
+    const bool okEnc = c
+        && EVP_EncryptInit_ex(c, EVP_chacha20_poly1305(), nullptr, nullptr, nullptr) == 1
+        && EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_AEAD_SET_IVLEN, 12, nullptr) == 1
+        && EVP_EncryptInit_ex(c, nullptr, nullptr,
+               reinterpret_cast<const unsigned char*>(key.constData()),
+               reinterpret_cast<const unsigned char*>(nonce.constData())) == 1
+        && EVP_EncryptUpdate(c, reinterpret_cast<unsigned char*>(out.data()), &len,
+               reinterpret_cast<const unsigned char*>(pt.constData()), pt.size()) == 1
+        && EVP_EncryptFinal_ex(c, reinterpret_cast<unsigned char*>(out.data()) + len, &fin) == 1
+        && EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_AEAD_GET_TAG, 16,
+                               out.data() + pt.size()) == 1;
+    if (c) EVP_CIPHER_CTX_free(c);
+    return okEnc ? out : QByteArray();
+}
+
+static QByteArray aeadDecrypt(const QByteArray& key, const QByteArray& nonce,
+                              const QByteArray& ctAndTag)
+{
+    if (ctAndTag.size() < 16) return QByteArray();
+    const QByteArray ct = ctAndTag.left(ctAndTag.size() - 16);
+    QByteArray tag      = ctAndTag.right(16);
+    QByteArray pt(ct.size(), 0);
+    int len = 0, fin = 0;
+    EVP_CIPHER_CTX* c = EVP_CIPHER_CTX_new();
+    const bool okDec = c
+        && EVP_DecryptInit_ex(c, EVP_chacha20_poly1305(), nullptr, nullptr, nullptr) == 1
+        && EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_AEAD_SET_IVLEN, 12, nullptr) == 1
+        && EVP_DecryptInit_ex(c, nullptr, nullptr,
+               reinterpret_cast<const unsigned char*>(key.constData()),
+               reinterpret_cast<const unsigned char*>(nonce.constData())) == 1
+        && EVP_DecryptUpdate(c, reinterpret_cast<unsigned char*>(pt.data()), &len,
+               reinterpret_cast<const unsigned char*>(ct.constData()), ct.size()) == 1
+        && EVP_CIPHER_CTX_ctrl(c, EVP_CTRL_AEAD_SET_TAG, 16, tag.data()) == 1
+        && EVP_DecryptFinal_ex(c, reinterpret_cast<unsigned char*>(pt.data()) + len, &fin) == 1;
+    if (c) EVP_CIPHER_CTX_free(c);
+    return okDec ? pt : QByteArray();
+}
+
+static QByteArray passphraseKey(const QString& passphrase, const QByteArray& salt)
+{
+    QByteArray key(32, 0);
+    const QByteArray pass = passphrase.toUtf8();
+    PKCS5_PBKDF2_HMAC(pass.constData(), pass.size(),
+        reinterpret_cast<const unsigned char*>(salt.constData()), salt.size(),
+        200000, EVP_sha256(), 32, reinterpret_cast<unsigned char*>(key.data()));
+    return key;
+}
+
 void InferenceIdentity::loadRoot()
 {
     QFile f(keyFilePath());
     if (!f.exists() || !f.open(QIODevice::ReadOnly)) return;
 
-    // Format: "<backend>:<64 hex chars>\n" (backend tag is informational only)
-    const QList<QByteArray> parts = f.readAll().trimmed().split(':');
+    // Plain:     "<backend>:<64 hex chars>"
+    // Encrypted: "enc:<backend>:<saltB64>:<nonceB64>:<ctB64>"
+    const QByteArray line = f.readAll().trimmed();
+    const QList<QByteArray> parts = line.split(':');
+
+    if (parts.size() == 5 && parts[0] == "enc") {
+        m_backend    = QString::fromUtf8(parts[1]);
+        m_lockedBlob = line;
+        qDebug() << "InferenceIdentity:" << m_role << "key file is passphrase-protected"
+                 << "— locked until unlock()";
+        return;
+    }
     if (parts.size() != 2) return;
     const QByteArray root = QByteArray::fromHex(parts[1]);
     if (root.size() != 32) return;
@@ -51,23 +117,61 @@ void InferenceIdentity::loadRoot()
     qDebug() << "InferenceIdentity:" << m_role << "loaded, fingerprint" << fingerprint();
 }
 
-bool InferenceIdentity::saveRoot(const QByteArray& root, const QString& backendName)
+bool InferenceIdentity::unlock(const QString& passphrase)
+{
+    if (isInitialized()) return true;
+    const QList<QByteArray> parts = m_lockedBlob.split(':');
+    if (parts.size() != 5) return false;
+
+    const QByteArray salt  = QByteArray::fromBase64(parts[2]);
+    const QByteArray nonce = QByteArray::fromBase64(parts[3]);
+    const QByteArray root  = aeadDecrypt(passphraseKey(passphrase, salt), nonce,
+                                         QByteArray::fromBase64(parts[4]));
+    if (root.size() != 32) {
+        qWarning() << "InferenceIdentity:" << m_role << "unlock failed (wrong passphrase?)";
+        return false;
+    }
+    m_root = root;
+    m_lockedBlob.clear();
+    qDebug() << "InferenceIdentity:" << m_role << "unlocked, fingerprint" << fingerprint();
+    return true;
+}
+
+bool InferenceIdentity::saveRoot(const QByteArray& root, const QString& backendName,
+                                 const QString& passphrase)
 {
     const QString path = keyFilePath();
     QDir().mkpath(QFileInfo(path).absolutePath());
+
+    QByteArray line;
+    if (passphrase.isEmpty()) {
+        line = backendName.toUtf8() + ":" + root.toHex();
+    } else {
+        QByteArray salt(16, 0), nonce(12, 0);
+        if (RAND_bytes(reinterpret_cast<unsigned char*>(salt.data()), 16) != 1 ||
+            RAND_bytes(reinterpret_cast<unsigned char*>(nonce.data()), 12) != 1)
+            return false;
+        const QByteArray ct = aeadEncrypt(passphraseKey(passphrase, salt), nonce, root);
+        if (ct.isEmpty()) return false;
+        line = "enc:" + backendName.toUtf8() + ":" + salt.toBase64() + ":"
+             + nonce.toBase64() + ":" + ct.toBase64();
+    }
 
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         qWarning() << "InferenceIdentity: cannot write" << path;
         return false;
     }
-    f.write(backendName.toUtf8() + ":" + root.toHex() + "\n");
+    f.write(line + "\n");
     f.close();
     f.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner);
 
     m_root    = root;
     m_backend = backendName;
-    qDebug() << "InferenceIdentity:" << m_role << "saved, fingerprint" << fingerprint();
+    m_lockedBlob.clear();
+    qDebug() << "InferenceIdentity:" << m_role << "saved"
+             << (passphrase.isEmpty() ? "(plain)" : "(passphrase-encrypted)")
+             << "fingerprint" << fingerprint();
     return true;
 }
 
@@ -136,7 +240,7 @@ QString InferenceIdentity::createAccount(const QString& passphrase)
     if (ok) {
         QByteArray root;
         if (rootFromMnemonic(mnemonic, passphrase, root) &&
-            saveRoot(root, "accounts_module")) {
+            saveRoot(root, "accounts_module", passphrase)) {
             return mnemonic;
         }
         qWarning() << "InferenceIdentity: derivation failed, falling back to seed-file";
@@ -148,7 +252,7 @@ QString InferenceIdentity::createAccount(const QString& passphrase)
     QByteArray root(32, 0);
     if (RAND_bytes(reinterpret_cast<unsigned char*>(root.data()), 32) != 1)
         return QString();
-    saveRoot(root, "seed-file");
+    saveRoot(root, "seed-file", passphrase);
     return QString();   // no mnemonic on this backend
 }
 
@@ -167,7 +271,7 @@ bool InferenceIdentity::importAccount(const QString& mnemonic, const QString& pa
     if (hex64.match(clean).hasMatch()) {
         QString h = clean;
         if (h.startsWith("0x")) h.remove(0, 2);
-        return saveRoot(QByteArray::fromHex(h.toUtf8()), "seed-file");
+        return saveRoot(QByteArray::fromHex(h.toUtf8()), "seed-file", passphrase);
     }
 
     QByteArray root;
@@ -176,7 +280,7 @@ bool InferenceIdentity::importAccount(const QString& mnemonic, const QString& pa
                    << "loaded, and the mnemonic valid?)";
         return false;
     }
-    return saveRoot(root, "accounts_module");
+    return saveRoot(root, "accounts_module", passphrase);
 }
 
 // ── Key derivation + crypto (OpenSSL) ────────────────────────────────
@@ -216,9 +320,28 @@ QByteArray InferenceIdentity::signPublicKey() const
     return rawPublicKey(EVP_PKEY_ED25519, appKey("inference/v1/sign"));
 }
 
+// Box keys rotate by epoch day: each day's secret is an independent
+// derivation, so leaking today's key exposes at most ~2 days of prompts
+// (current epoch + the grace epoch open() accepts). Announces always carry
+// the current key, so honest users never seal to a stale one.
+qint64 InferenceIdentity::boxEpoch()
+{
+    // Test hook: INFERENCE_BOX_EPOCH pins the epoch (rotation is otherwise
+    // untestable without waiting a day).
+    bool ok = false;
+    const qint64 forced = qEnvironmentVariable("INFERENCE_BOX_EPOCH").toLongLong(&ok);
+    if (ok && forced > 0) return forced;
+    return QDateTime::currentSecsSinceEpoch() / 86400;
+}
+
+QByteArray InferenceIdentity::boxSecret(qint64 epoch) const
+{
+    return appKey("inference/v1/box|" + QByteArray::number(epoch));
+}
+
 QByteArray InferenceIdentity::boxPublicKey() const
 {
-    return rawPublicKey(EVP_PKEY_X25519, appKey("inference/v1/box"));
+    return rawPublicKey(EVP_PKEY_X25519, boxSecret(boxEpoch()));
 }
 
 QByteArray InferenceIdentity::sign(const QByteArray& msg) const
@@ -423,5 +546,9 @@ QByteArray InferenceIdentity::openWith(const QByteArray& secretKey,
 
 QByteArray InferenceIdentity::open(const QByteArray& sealed) const
 {
-    return openWith(appKey("inference/v1/box"), sealed);
+    const qint64 epoch = boxEpoch();
+    QByteArray pt = openWith(boxSecret(epoch), sealed);
+    if (pt.isEmpty())
+        pt = openWith(boxSecret(epoch - 1), sealed);   // just-rotated grace
+    return pt;
 }

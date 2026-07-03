@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QList>
+#include <QTimer>
 #include <QVariant>
 #include "inference_interface.h"
 #include "inference_identity.h"
@@ -29,6 +30,11 @@ struct PromptRec {
     // Discarded with the record — nothing links two prompts to each other.
     QByteArray ephSk;
     bool    sealed   = false;
+    // Failover: which providers we've already tried, and when we last sent.
+    QStringList tried;
+    int     retries    = 0;
+    bool    failed     = false;
+    qint64  lastSendMs = 0;
 };
 
 // A provider we've heard a (signature-verified) announce from.
@@ -73,6 +79,9 @@ public:
     Q_INVOKABLE bool    importAccount(const QString& mnemonic,
                                       const QString& passphrase) override;
     Q_INVOKABLE QString listProviders() override;
+    Q_INVOKABLE bool    unlock(const QString& passphrase) override;
+    Q_INVOKABLE bool    setRequireEncryption(bool required) override;
+    Q_INVOKABLE bool    setPreferredProvider(const QString& fingerprint) override;
 
 signals:
     void eventResponse(const QString& eventName, const QVariantList& args);
@@ -82,7 +91,9 @@ private:
     void    handleMessageReceived(const QVariantList& data);
     void    handleAnnounce(const QJsonObject& obj);
     void    handleResponse(const QJsonObject& obj);
-    const ProviderRec* pickProvider(QString& fpOut) const;
+    const ProviderRec* pickProvider(QString& fpOut, const QStringList& exclude) const;
+    bool    dispatchPrompt(PromptRec& rec);
+    void    sweepPending();
     void    setDeliveryStatus(int status);
     bool    invokeBool(const char* what, const QString& method,
                        const QVariant& arg = QVariant());
@@ -92,6 +103,11 @@ private:
     QString           m_room = "lobby";
     QList<PromptRec>  m_prompts;   // newest first
     QHash<QString, ProviderRec> m_providers;   // fingerprint → verified announce
+    QString           m_preferredProvider;     // "" = auto (least loaded)
+    bool              m_requireEncryption = false;
+    qint64            m_timeoutMs = 90000;     // INFERENCE_TIMEOUT_MS override
+    int               m_maxRetries = 2;
+    QTimer*           m_sweepTimer = nullptr;
 
     LogosAPIClient* m_deliveryClient = nullptr;
     LogosObject*    m_deliveryObject = nullptr;
