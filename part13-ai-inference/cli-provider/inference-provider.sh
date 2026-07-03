@@ -122,7 +122,17 @@ $(tail -n 12 "$DAEMON_LOG" 2>/dev/null)"
 fi
 ok "daemon is up"
 
-# --- 2. load the provider module (pulls in delivery_module) ------------------
+# --- 2. load the modules ------------------------------------------------------
+# accounts_module is optional: with it the provider identity is a real BIP-39
+# account (mnemonic backup); without it a random seed file is used.
+if [[ -d "$PROV_MODULES/accounts_module" ]]; then
+    log "loading accounts_module (identity backend)..."
+    lc load-module accounts_module --json >/dev/null 2>&1 || true
+    lc list-modules --json | jq -e '.[]|select(.name=="accounts_module" and .status=="loaded")' >/dev/null 2>&1 \
+        && ok "accounts_module loaded" \
+        || warn "accounts_module failed to load — identity falls back to a seed file"
+fi
+
 log "loading inference_provider..."
 lc load-module inference_provider --json >/dev/null 2>&1 || true
 lc list-modules --json | jq -e '.[]|select(.name=="inference_provider" and .status=="loaded")' >/dev/null 2>&1 \
@@ -135,8 +145,13 @@ res="$(lc call inference_provider start "$ROOM" | jq -r '.result // "false"' 2>/
 [[ "$res" == "true" ]] || warn "start did not return true (see $DAEMON_LOG) — continuing"
 
 id="$(lc call inference_provider providerId | jq -r '.result // ""' 2>/dev/null)"
+idjson="$(lc call inference_provider identityStatus | jq -r '.result // "{}"' 2>/dev/null)"
+backend="$(jq -r '.backend // "?"' <<<"$idjson" 2>/dev/null)"
 ok "ready — answering prompts on $TOPIC with '$INFERENCE_MODEL'"
-log "provider id: ${id:-?}"
+log "provider id: ${id:-?}  (identity backend: ${backend:-?})"
+if [[ "$(jq -r '.initialized' <<<"$idjson" 2>/dev/null)" == "true" && "$backend" == "accounts_module" ]]; then
+    log "identity is mnemonic-backed — if this is a fresh account, the seed phrase was printed in $DAEMON_LOG (once)."
+fi
 echo   "──────────────────────────────────────────────────────────────"
 log "send prompts from Basecamp's \"AI Inference\" app (same room). Ctrl+C to stop."
 

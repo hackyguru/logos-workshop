@@ -3,9 +3,12 @@
 
 #include <QObject>
 #include <QString>
+#include <QHash>
+#include <QJsonObject>
 #include <QList>
 #include <QVariant>
 #include "inference_interface.h"
+#include "inference_identity.h"
 #include "logos_api.h"
 #include "logos_api_client.h"
 #include "logos_object.h"
@@ -21,6 +24,20 @@ struct PromptRec {
     QString text;          // the model's reply
     QString provider;      // who answered (from the response payload)
     QString model;         // which model produced it
+    // E2E: the per-prompt ephemeral X25519 secret. The matching public key
+    // rides inside the sealed prompt; the provider seals its response to it.
+    // Discarded with the record — nothing links two prompts to each other.
+    QByteArray ephSk;
+    bool    sealed   = false;
+};
+
+// A provider we've heard a (signature-verified) announce from.
+struct ProviderRec {
+    QByteArray signPk;     // Ed25519 — verifies its responses
+    QByteArray boxPk;      // X25519 — we seal prompts to this
+    QString    model;
+    int        load       = 0;
+    qint64     lastSeenMs = 0;
 };
 
 class InferencePlugin : public QObject, public InferenceInterface
@@ -51,12 +68,21 @@ public:
     Q_INVOKABLE bool    clearExchanges() override;
     Q_INVOKABLE QString myId() override;
 
+    Q_INVOKABLE QString identityStatus() override;
+    Q_INVOKABLE QString createAccount(const QString& passphrase) override;
+    Q_INVOKABLE bool    importAccount(const QString& mnemonic,
+                                      const QString& passphrase) override;
+    Q_INVOKABLE QString listProviders() override;
+
 signals:
     void eventResponse(const QString& eventName, const QVariantList& args);
 
 private:
     QString topicForRoom(const QString& room) const;
     void    handleMessageReceived(const QVariantList& data);
+    void    handleAnnounce(const QJsonObject& obj);
+    void    handleResponse(const QJsonObject& obj);
+    const ProviderRec* pickProvider(QString& fpOut) const;
     void    setDeliveryStatus(int status);
     bool    invokeBool(const char* what, const QString& method,
                        const QVariant& arg = QVariant());
@@ -65,9 +91,11 @@ private:
     QString           m_myId;
     QString           m_room = "lobby";
     QList<PromptRec>  m_prompts;   // newest first
+    QHash<QString, ProviderRec> m_providers;   // fingerprint → verified announce
 
     LogosAPIClient* m_deliveryClient = nullptr;
     LogosObject*    m_deliveryObject = nullptr;
+    InferenceIdentity* m_identity    = nullptr;
     int             m_deliveryStatus = 0;
     bool            m_started        = false;
     bool            m_createNodeDone = false;

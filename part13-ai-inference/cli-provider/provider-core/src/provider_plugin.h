@@ -3,8 +3,10 @@
 
 #include <QObject>
 #include <QString>
+#include <QTimer>
 #include <QVariant>
 #include "provider_interface.h"
+#include "inference_identity.h"
 #include "logos_api.h"
 #include "logos_api_client.h"
 #include "logos_object.h"
@@ -30,15 +32,22 @@ public:
     Q_INVOKABLE QString stats() override;
     Q_INVOKABLE QString providerId() override;
 
+    Q_INVOKABLE QString identityStatus() override;
+    Q_INVOKABLE QString createAccount(const QString& passphrase) override;
+    Q_INVOKABLE bool    importAccount(const QString& mnemonic,
+                                      const QString& passphrase) override;
+
 signals:
     void eventResponse(const QString& eventName, const QVariantList& args);
 
 private:
+    void    ensureIdentity();
+    void    sendAnnounce();
     QString topicForRoom(const QString& room) const;
     void    handleMessageReceived(const QVariantList& data);
-    void    runInference(const QString& id, const QString& from,
+    void    runInference(const QString& id, const QString& replyPkB64,
                          const QString& prompt, const QString& topic);
-    void    sendResponse(const QString& id, const QString& from,
+    void    sendResponse(const QString& id, const QString& replyPkB64,
                          const QString& text, const QString& topic);
     bool    invokeBool(const char* what, const QString& method,
                        const QVariant& arg = QVariant());
@@ -51,11 +60,14 @@ private:
     bool             m_createNodeDone = false;
     int              m_promptsSeen    = 0;
     int              m_responsesSent  = 0;
+    int              m_inflight       = 0;   // prompts being answered right now
     QString          m_lastPromptId;
     QString          m_lastFrom;
+    QTimer*          m_announceTimer  = nullptr;
 
     LogosAPIClient*  m_deliveryClient = nullptr;
     LogosObject*     m_deliveryObject = nullptr;
+    InferenceIdentity* m_identity     = nullptr;
 };
 
 #endif

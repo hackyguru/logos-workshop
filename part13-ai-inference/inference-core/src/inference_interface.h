@@ -31,6 +31,28 @@ public:
     Q_INVOKABLE virtual QString listExchanges() = 0;  // my prompts + their responses
     Q_INVOKABLE virtual bool    clearExchanges() = 0;
     Q_INVOKABLE virtual QString myId() = 0;
+
+    // ── Identity (InferenceIdentity facade) ──────────────────────────
+    // One account = one BIP-39 mnemonic; the signing/box keys and the
+    // fingerprint are derived from it. The UI drives create/import — nothing
+    // is auto-created here. NOTE: the user's identity never goes on the wire
+    // (prompts stay pseudonymous); it anchors the future RLN membership and
+    // payment keys.
+
+    // Compact JSON: { initialized, backend, fingerprint, signPk, boxPk }
+    Q_INVOKABLE virtual QString identityStatus() = 0;
+    // Returns the mnemonic (display once, never stored); "" on the seed-file
+    // backend (no mnemonic exists) or if an identity already exists.
+    Q_INVOKABLE virtual QString createAccount(const QString& passphrase) = 0;
+    // Accepts a BIP-39 mnemonic (needs accounts_module) or a 64-hex raw root.
+    Q_INVOKABLE virtual bool    importAccount(const QString& mnemonic,
+                                              const QString& passphrase) = 0;
+
+    // Verified provider roster, from signed announces. Compact JSON array:
+    // [{ id, model, load, ageMs, live }]. Prompts are sealed (E2E) to the
+    // least-loaded live provider automatically; with no live provider they
+    // fall back to the legacy plaintext broadcast.
+    Q_INVOKABLE virtual QString listProviders() = 0;
 };
 
 #define InferenceInterface_iid "org.logos.InferenceInterface"

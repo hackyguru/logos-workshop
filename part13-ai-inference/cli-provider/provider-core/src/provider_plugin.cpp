@@ -3,6 +3,7 @@
 #include "logos_api_client.h"
 #include "logos_object.h"
 
+#include <QDateTime>
 #include <QDebug>
 #include <QElapsedTimer>
 #include <QJsonDocument>
@@ -31,12 +32,94 @@ ProviderPlugin::~ProviderPlugin() = default;
 void ProviderPlugin::initLogos(LogosAPI* api)
 {
     logosAPI = api;
+    m_identity = new InferenceIdentity(logosAPI, "provider");
+    // An identity may already exist on disk from a previous run.
+    if (m_identity->isInitialized()) {
+        m_id = m_identity->fingerprint();
+        qDebug() << "ProviderPlugin: identity loaded, id =" << m_id;
+    }
     qDebug() << "ProviderPlugin: LogosAPI wired up";
+}
+
+// Make sure this provider has a durable identity before it goes on the air.
+// Priority: existing key file > $IMPORT_MNEMONIC > freshly created account.
+// The Ed25519 fingerprint replaces the old random cli-llm-xxxx id, so the
+// same provider keeps the same id across restarts (and it's spoof-resistant
+// once announces are signed — PR2).
+void ProviderPlugin::ensureIdentity()
+{
+    if (!m_identity || m_identity->isInitialized()) {
+        if (m_identity) m_id = m_identity->fingerprint();
+        return;
+    }
+
+    const QString importMnemonic = qEnvironmentVariable("IMPORT_MNEMONIC");
+    if (!importMnemonic.isEmpty()) {
+        if (m_identity->importAccount(importMnemonic,
+                                      qEnvironmentVariable("IDENTITY_PASSPHRASE"))) {
+            qInfo() << "ProviderPlugin: identity imported from IMPORT_MNEMONIC";
+        } else {
+            qWarning() << "ProviderPlugin: IMPORT_MNEMONIC import failed —"
+                       << "creating a fresh identity instead";
+        }
+    }
+
+    if (!m_identity->isInitialized()) {
+        const QString mnemonic =
+            m_identity->createAccount(qEnvironmentVariable("IDENTITY_PASSPHRASE"));
+        if (!mnemonic.isEmpty()) {
+            // The one and only time the mnemonic is visible. qInfo (not qDebug)
+            // so it reaches the daemon log even at default verbosity.
+            qInfo().noquote() << "\n"
+                "──────────────────────────────────────────────────────────\n"
+                " NEW PROVIDER IDENTITY — write this seed phrase down.\n"
+                " It will not be shown again:\n\n   " + mnemonic + "\n"
+                "──────────────────────────────────────────────────────────";
+        }
+    }
+
+    if (m_identity->isInitialized()) {
+        m_id = m_identity->fingerprint();
+        qInfo() << "ProviderPlugin: identity ready, backend" << m_identity->backend()
+                << "fingerprint" << m_id;
+    } else {
+        qWarning() << "ProviderPlugin: no identity — keeping ephemeral id" << m_id;
+    }
+}
+
+QString ProviderPlugin::identityStatus()
+{
+    QJsonObject o;
+    const bool init = m_identity && m_identity->isInitialized();
+    o["initialized"] = init;
+    o["backend"]     = init ? m_identity->backend() : QString();
+    o["fingerprint"] = init ? m_identity->fingerprint() : QString();
+    o["signPk"]      = init ? QString::fromLatin1(m_identity->signPublicKey().toBase64()) : QString();
+    o["boxPk"]       = init ? QString::fromLatin1(m_identity->boxPublicKey().toBase64()) : QString();
+    return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
+}
+
+QString ProviderPlugin::createAccount(const QString& passphrase)
+{
+    if (!m_identity) return QString();
+    const QString mnemonic = m_identity->createAccount(passphrase);
+    if (m_identity->isInitialized()) m_id = m_identity->fingerprint();
+    return mnemonic;
+}
+
+bool ProviderPlugin::importAccount(const QString& mnemonic, const QString& passphrase)
+{
+    if (!m_identity) return false;
+    const bool ok = m_identity->importAccount(mnemonic, passphrase);
+    if (ok) m_id = m_identity->fingerprint();
+    return ok;
 }
 
 bool ProviderPlugin::start(const QString& room)
 {
     const QString clean = room.trimmed().isEmpty() ? QStringLiteral("lobby") : room.trimmed();
+
+    ensureIdentity();
 
     if (m_started) {
         if (clean != m_room && m_deliveryClient) {
@@ -88,15 +171,56 @@ bool ProviderPlugin::start(const QString& room)
 
     if (!invokeBool("subscribe", "subscribe", topicForRoom(m_room))) return false;
 
+    // Announce this provider (fingerprint + keys + model + load) so users can
+    // build a verified roster and seal prompts to our box key. Re-announced
+    // every 10s; users expire entries they haven't heard from in ~30s.
+    if (!m_announceTimer) {
+        m_announceTimer = new QTimer(this);
+        connect(m_announceTimer, &QTimer::timeout, this, &ProviderPlugin::sendAnnounce);
+    }
+    m_announceTimer->start(10000);
+    sendAnnounce();
+
     qDebug() << "ProviderPlugin:" << m_id << "listening on" << topicForRoom(m_room)
              << "model" << m_model;
     emit eventResponse("listening", QVariantList{ m_room, m_id, m_model });
     return true;
 }
 
+void ProviderPlugin::sendAnnounce()
+{
+    if (!m_started || !m_deliveryClient) return;
+    if (!m_identity || !m_identity->isInitialized()) return;
+
+    const QString signPk = QString::fromLatin1(m_identity->signPublicKey().toBase64());
+    const QString boxPk  = QString::fromLatin1(m_identity->boxPublicKey().toBase64());
+    const qint64  ts     = QDateTime::currentMSecsSinceEpoch();
+
+    // Canonical signed bytes: pipe-joined fields, same order both sides.
+    const QByteArray canon = QString("inference/v1/announce|%1|%2|%3|%4|%5|%6")
+        .arg(m_id, signPk, boxPk, m_model,
+             QString::number(m_inflight), QString::number(ts)).toUtf8();
+
+    QJsonObject a;
+    a["v"]      = 2;
+    a["type"]   = "announce";
+    a["id"]     = m_id;
+    a["signPk"] = signPk;
+    a["boxPk"]  = boxPk;
+    a["model"]  = m_model;
+    a["load"]   = m_inflight;
+    a["ts"]     = ts;
+    a["sig"]    = QString::fromLatin1(m_identity->sign(canon).toBase64());
+
+    m_deliveryClient->invokeRemoteMethod(
+        "delivery_module", "send", topicForRoom(m_room),
+        QString::fromUtf8(QJsonDocument(a).toJson(QJsonDocument::Compact)));
+}
+
 bool ProviderPlugin::stop()
 {
     if (!m_started) return true;
+    if (m_announceTimer) m_announceTimer->stop();
     if (m_deliveryClient) {
         invokeBool("unsubscribe", "unsubscribe", topicForRoom(m_room));
         invokeBool("stop", "stop");
@@ -115,6 +239,7 @@ QString ProviderPlugin::stats()
     o["model"]         = m_model;
     o["promptsSeen"]   = m_promptsSeen;
     o["responsesSent"] = m_responsesSent;
+    o["inflight"]      = m_inflight;
     o["lastPromptId"]  = m_lastPromptId;
     o["lastFrom"]      = m_lastFrom;
     return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
@@ -145,27 +270,57 @@ void ProviderPlugin::handleMessageReceived(const QVariantList& data)
     const QJsonObject obj = doc.object();
     if (obj.value("type").toString() != "prompt") return;   // only answer prompts
 
-    const QString id     = obj.value("id").toString();
-    const QString from   = obj.value("from").toString();
-    const QString prompt = obj.value("prompt").toString();
-    if (id.isEmpty() || prompt.isEmpty()) return;
+    const QString id = obj.value("id").toString();
+    if (id.isEmpty()) return;
+
+    QString prompt;         // what we feed the model
+    QString replyPkB64;     // v2: seal the response to this ephemeral key
+    QString fromLabel;      // for stats/logs only
+
+    if (obj.value("v").toInt() >= 2) {
+        // v2 sealed prompt: only for us, and only readable by us.
+        if (obj.value("to").toString() != m_id) return;
+        if (!m_identity || !m_identity->isInitialized()) return;
+
+        const QByteArray sealed =
+            QByteArray::fromBase64(obj.value("box").toString().toLatin1());
+        const QByteArray inner = m_identity->open(sealed);
+        if (inner.isEmpty()) {
+            qWarning() << "ProviderPlugin: sealed prompt" << id
+                       << "failed to open (wrong key or tampered) — dropping";
+            return;
+        }
+        const QJsonDocument innerDoc = QJsonDocument::fromJson(inner);
+        if (!innerDoc.isObject()) return;
+        prompt     = innerDoc.object().value("prompt").toString();
+        replyPkB64 = innerDoc.object().value("replyPk").toString();
+        if (replyPkB64.isEmpty()) return;   // no way to answer privately
+        fromLabel  = "sealed:" + replyPkB64.left(8);
+    } else {
+        // v1 plaintext prompt (legacy UIs) — answered in plaintext as before.
+        prompt    = obj.value("prompt").toString();
+        fromLabel = obj.value("from").toString();
+    }
+    if (prompt.isEmpty()) return;
 
     ++m_promptsSeen;
+    ++m_inflight;
     m_lastPromptId = id;
-    m_lastFrom     = from;
-    qDebug() << "ProviderPlugin: prompt" << id << "from" << from
+    m_lastFrom     = fromLabel;
+    qDebug() << "ProviderPlugin: prompt" << id << "from" << fromLabel
+             << (replyPkB64.isEmpty() ? "(plaintext)" : "(sealed)")
              << "→ running" << m_model;
 
     // Defer the inference so we don't block (and don't re-enter delivery_module
     // from inside its own event dispatch — delivery-guide gotcha #9). The actual
     // ollama call is async (QProcess), so it never blocks the event loop either.
     const QString topicCopy = topic;
-    QTimer::singleShot(0, this, [this, id, from, prompt, topicCopy]() {
-        runInference(id, from, prompt, topicCopy);
+    QTimer::singleShot(0, this, [this, id, replyPkB64, prompt, topicCopy]() {
+        runInference(id, replyPkB64, prompt, topicCopy);
     });
 }
 
-void ProviderPlugin::runInference(const QString& id, const QString& from,
+void ProviderPlugin::runInference(const QString& id, const QString& replyPkB64,
                                   const QString& prompt, const QString& topic)
 {
     // Ask ollama via its HTTP API (the server is already running on $OLLAMA_URL).
@@ -183,7 +338,7 @@ void ProviderPlugin::runInference(const QString& id, const QString& from,
     timer->start();
 
     connect(proc, &QProcess::finished, this,
-        [this, proc, timer, id, from, topic](int exitCode, QProcess::ExitStatus) {
+        [this, proc, timer, id, replyPkB64, topic](int exitCode, QProcess::ExitStatus) {
             const qint64 ms = timer->elapsed();
             delete timer;
             const QByteArray out = proc->readAllStandardOutput();
@@ -206,7 +361,7 @@ void ProviderPlugin::runInference(const QString& id, const QString& from,
             }
             qDebug() << "ProviderPlugin: inference for" << id << "done in" << ms
                      << "ms," << text.size() << "chars";
-            sendResponse(id, from, text.trimmed(), topic);
+            sendResponse(id, replyPkB64, text.trimmed(), topic);
         });
 
     // curl is at /usr/bin/curl on macOS / standard on Linux — on the base PATH.
@@ -215,17 +370,43 @@ void ProviderPlugin::runInference(const QString& id, const QString& from,
     proc->closeWriteChannel();
 }
 
-void ProviderPlugin::sendResponse(const QString& id, const QString& from,
+void ProviderPlugin::sendResponse(const QString& id, const QString& replyPkB64,
                                   const QString& text, const QString& topic)
 {
+    if (m_inflight > 0) --m_inflight;
     if (!m_deliveryClient) return;
+
     QJsonObject resp;
-    resp["type"]  = "response";
-    resp["id"]    = id;
-    resp["from"]  = m_id;
-    resp["to"]    = from;
-    resp["text"]  = text;
-    resp["model"] = m_model;
+    resp["id"]   = id;
+    resp["from"] = m_id;
+
+    if (!replyPkB64.isEmpty() && m_identity && m_identity->isInitialized()) {
+        // v2: seal {text, model} to the prompt's ephemeral reply key. Only the
+        // asker can read it; the signature binds it to this provider.
+        QJsonObject inner;
+        inner["text"]  = text;
+        inner["model"] = m_model;
+        const QByteArray sealed = InferenceIdentity::seal(
+            QByteArray::fromBase64(replyPkB64.toLatin1()),
+            QJsonDocument(inner).toJson(QJsonDocument::Compact));
+        if (sealed.isEmpty()) {
+            qWarning() << "ProviderPlugin: sealing response" << id << "failed — dropping";
+            return;
+        }
+        const QString boxB64 = QString::fromLatin1(sealed.toBase64());
+        const QByteArray canon =
+            QString("inference/v1/response|%1|%2").arg(id, boxB64).toUtf8();
+        resp["v"]    = 2;
+        resp["type"] = "response";
+        resp["box"]  = boxB64;
+        resp["sig"]  = QString::fromLatin1(m_identity->sign(canon).toBase64());
+    } else {
+        // v1 plaintext response (legacy prompt had no reply key).
+        resp["type"]  = "response";
+        resp["text"]  = text;
+        resp["model"] = m_model;
+    }
+
     const QString payload = QString::fromUtf8(
         QJsonDocument(resp).toJson(QJsonDocument::Compact));
 
@@ -233,7 +414,7 @@ void ProviderPlugin::sendResponse(const QString& id, const QString& from,
         "delivery_module", "send", topic, payload);
     if (r.isValid()) {
         ++m_responsesSent;
-        emit eventResponse("responseSent", QVariantList{ id, from });
+        emit eventResponse("responseSent", QVariantList{ id });
     } else {
         qWarning() << "ProviderPlugin: response send RPC failed for" << id;
     }

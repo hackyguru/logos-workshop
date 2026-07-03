@@ -118,5 +118,35 @@ cat > "$PROV_DEST/manifest.json" <<JSON
 JSON
 log "inference_provider ready at: $PROV_DEST"
 
+# ── accounts_module (optional — identity backend) ────────────────────────────
+# Copied from a local Basecamp install; gives the provider real BIP-39
+# mnemonics + BIP-32 derivation for its identity. Without it the provider
+# falls back to a random seed file (no mnemonic backup). Three fixes make the
+# Basecamp copy loadable under the CLI (verified 2026-07-02):
+#   1. manifest.main needs a "darwin-arm64-dev" entry (drop stale hashes),
+#   2. QtRemoteObjects.framework must sit next to the plugin,
+#   3. so must libintl/libiconv/libcharset.
+ACC_SRC="${ACCOUNTS_SRC:-$HOME/Library/Application Support/Logos/LogosBasecamp/modules/accounts_module}"
+ACC_FRAMEWORKS="${ACCOUNTS_FRAMEWORKS:-/Applications/LogosBasecamp.app/Contents/Frameworks}"
+ACC_DEST="$HERE/modules/accounts_module"
+if [[ -d "$ACC_SRC" && -d "$ACC_FRAMEWORKS" ]]; then
+    log "staging accounts_module from: $ACC_SRC"
+    rm -rf "$ACC_DEST"; mkdir -p "$ACC_DEST"
+    cp -R "$ACC_SRC/." "$ACC_DEST/"
+    cp -R "$ACC_FRAMEWORKS/QtRemoteObjects.framework" "$ACC_DEST/"
+    for lib in libintl.8.dylib libiconv.2.dylib libcharset.1.dylib; do
+        cp -f "$ACC_FRAMEWORKS/$lib" "$ACC_DEST/"
+    done
+    if command -v jq >/dev/null 2>&1; then
+        tmp="$(mktemp)"
+        jq 'del(.hashes) | .main["darwin-arm64-dev"] //= .main["darwin-arm64"]' \
+            "$ACC_DEST/manifest.json" > "$tmp" && mv "$tmp" "$ACC_DEST/manifest.json"
+    fi
+    log "accounts_module ready at: $ACC_DEST"
+else
+    log "accounts_module not staged (no Basecamp install found) — provider"
+    log "identity will use the seed-file fallback. Set ACCOUNTS_SRC/ACCOUNTS_FRAMEWORKS to override."
+fi
+
 log "done. modules staged: $(cd "$HERE/modules" && ls | tr '\n' ' ')"
 log "next: ./inference-provider.sh lobby   (needs ollama running with the model pulled)"

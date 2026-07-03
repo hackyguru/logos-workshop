@@ -26,6 +26,21 @@ public:
     //                 lastPromptId, lastFrom }
     Q_INVOKABLE virtual QString stats() = 0;
     Q_INVOKABLE virtual QString providerId() = 0;
+
+    // ── Identity (InferenceIdentity facade) ──────────────────────────
+    // One account = one BIP-39 mnemonic; signing/box keys and the provider
+    // fingerprint are derived from it. start() auto-creates an identity if
+    // none exists (or imports $IMPORT_MNEMONIC), so these are mostly for
+    // inspection and scripted setup.
+
+    // Compact JSON: { initialized, backend, fingerprint, signPk, boxPk }
+    Q_INVOKABLE virtual QString identityStatus() = 0;
+    // Returns the mnemonic (show once, never stored); "" on the seed-file
+    // backend or if an identity already exists.
+    Q_INVOKABLE virtual QString createAccount(const QString& passphrase) = 0;
+    // Accepts a BIP-39 mnemonic (needs accounts_module) or a 64-hex raw root.
+    Q_INVOKABLE virtual bool    importAccount(const QString& mnemonic,
+                                              const QString& passphrase) = 0;
 };
 
 #define ProviderInterface_iid "org.logos.ProviderInterface"

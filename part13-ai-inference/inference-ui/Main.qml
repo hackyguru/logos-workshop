@@ -11,6 +11,11 @@ Item {
     property var    exchanges: []
     property string myId: ""
     property string currentRoom: "lobby"
+    property bool   identityInit: false
+    property string identityFp: ""
+    property string identityBackend: ""
+    property string freshMnemonic: ""   // held only while the reveal popup is open
+    property var    providers: []       // verified roster from signed announces
 
     // ── Logos bridge helpers ─────────────────────────────────────────
 
@@ -43,6 +48,45 @@ Item {
         try {
             exchanges = (typeof inner === "string") ? JSON.parse(inner) : inner
         } catch (e) { exchanges = [] }
+        refreshIdentity()
+        const provRaw = unwrapRemote(callInf("listProviders", []), [])
+        try {
+            providers = (typeof provRaw === "string") ? JSON.parse(provRaw) : provRaw
+        } catch (e) { providers = [] }
+    }
+
+    function liveProviders() {
+        var n = 0
+        for (var i = 0; i < providers.length; i++)
+            if (providers[i].live) n++
+        return n
+    }
+
+    function refreshIdentity() {
+        const raw = unwrapRemote(callInf("identityStatus", []), "")
+        try {
+            const st = (typeof raw === "string") ? JSON.parse(raw) : raw
+            identityInit    = !!st.initialized
+            identityFp      = st.fingerprint || ""
+            identityBackend = st.backend || ""
+        } catch (e) { /* keep previous state */ }
+    }
+
+    function createIdentity() {
+        const m = unwrapRemote(callInf("createAccount", [""]), "")
+        refreshIdentity()
+        if (typeof m === "string" && m.length > 0) {
+            freshMnemonic = m
+            mnemonicPopup.open()
+        }
+    }
+
+    function importIdentity() {
+        const phrase = importField.text.trim()
+        if (phrase.length === 0) return
+        const ok = unwrapRemote(callInf("importAccount", [phrase, ""]), false)
+        if (ok === true) importField.text = ""
+        refreshIdentity()
     }
 
     function send() {
@@ -102,6 +146,78 @@ Item {
             text: "my id: " + myId + "   ·   topic: " + topicFor(currentRoom)
             color: "#888"
             font.pixelSize: 11
+        }
+
+        // Identity chip (once an account exists)
+        Text {
+            visible: identityInit
+            text: "identity: " + identityFp.substring(0, 16) + "…   ·   " + identityBackend
+                  + (deliveryStatus === 2
+                     ? (liveProviders() > 0
+                        ? "   ·   🔒 " + liveProviders() + " provider(s) — prompts encrypted"
+                        : "   ·   ⚠ no providers heard — prompts go plaintext")
+                     : "")
+            color: "#666"
+            font.pixelSize: 11
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: { clipProxy.text = identityFp; clipProxy.selectAll(); clipProxy.copy() }
+            }
+        }
+        // Invisible helper so clicking the chip copies the full fingerprint.
+        TextEdit { id: clipProxy; visible: false }
+
+        // Identity setup card (first run)
+        Rectangle {
+            visible: !identityInit
+            Layout.fillWidth: true
+            Layout.preferredHeight: idCol.implicitHeight + 24
+            color: "#fff8e6"
+            border.color: "#f0d58c"; border.width: 1; radius: 8
+
+            ColumnLayout {
+                id: idCol
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.margins: 12
+                spacing: 8
+
+                Text {
+                    text: "No identity yet"
+                    font.pixelSize: 14
+                    font.weight: Font.DemiBold
+                    color: "#7a5c00"
+                }
+                Text {
+                    Layout.fillWidth: true
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: 12
+                    color: "#7a5c00"
+                    text: "One account backs everything — signing keys, encryption keys, "
+                        + "and (soon) rate-limit membership. Create one, or import an "
+                        + "existing seed phrase."
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Button { text: "Create new account"; onClicked: createIdentity() }
+                    TextField {
+                        id: importField
+                        Layout.fillWidth: true
+                        placeholderText: "…or paste a seed phrase to import"
+                        font.pixelSize: 12
+                        onAccepted: importIdentity()
+                    }
+                    Button {
+                        text: "Import"
+                        enabled: importField.text.trim().length > 0
+                        onClicked: importIdentity()
+                    }
+                }
+            }
         }
 
         // Room row
@@ -230,10 +346,11 @@ Item {
                               : ("🤖  thinking… " + Math.floor(modelData.ageMs / 1000) + "s")
                     }
 
-                    // Footer: model · provider · latency
+                    // Footer: sealed · model · provider · latency
                     Text {
                         visible: modelData.answered
-                        text: (modelData.model || "model")
+                        text: (modelData.sealed ? "🔒 E2E  ·  " : "")
+                              + (modelData.model || "model")
                               + "  ·  " + (modelData.provider || "?")
                               + "  ·  " + modelData.rttMs + " ms"
                         color: "#188038"
@@ -252,6 +369,59 @@ Item {
                       ? "Press Start, type a prompt, and Send.\nA logoscore-CLI provider running ollama will answer."
                       : "Type a prompt and Send — it goes onto\n" + topicFor(currentRoom)
                 color: "#9aa5b1"
+            }
+        }
+    }
+
+    // Seed-phrase reveal — the mnemonic exists only here, once. Closing it is
+    // the user's confirmation that it's written down.
+    Popup {
+        id: mnemonicPopup
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 60, 520)
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        onClosed: freshMnemonic = ""
+
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 8
+            spacing: 10
+
+            Text {
+                text: "Your seed phrase — write it down now"
+                font.pixelSize: 15
+                font.weight: Font.DemiBold
+            }
+            Text {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                font.pixelSize: 12
+                color: "#a33"
+                text: "This is the ONLY backup of your identity and it will not be "
+                    + "shown again. Anyone who has it can become you."
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: mnemonicText.implicitHeight + 20
+                color: "#f4f6f8"; radius: 6
+                border.color: "#dfe3e8"; border.width: 1
+                TextEdit {
+                    id: mnemonicText
+                    anchors.fill: parent
+                    anchors.margins: 10
+                    text: freshMnemonic
+                    readOnly: true
+                    selectByMouse: true
+                    wrapMode: TextEdit.Wrap
+                    font.pixelSize: 14
+                    font.family: "Menlo"
+                }
+            }
+            Button {
+                Layout.alignment: Qt.AlignRight
+                text: "I've written it down"
+                onClicked: mnemonicPopup.close()
             }
         }
     }
