@@ -62,6 +62,7 @@ private:
     int              m_promptsSeen    = 0;
     int              m_responsesSent  = 0;
     int              m_inflight       = 0;   // prompts being answered right now
+    int              m_maxInflight    = 4;   // concurrency cap (INFERENCE_MAX_INFLIGHT)
     QSet<QString>    m_inflightIds;           // ids currently being answered (dedup)
     QString          m_lastPromptId;
     QString          m_lastFrom;

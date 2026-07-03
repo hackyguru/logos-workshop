@@ -96,6 +96,7 @@ private:
     const ProviderRec* pickProvider(QString& fpOut, const QStringList& exclude) const;
     bool    dispatchPrompt(PromptRec& rec);
     void    sweepPending();
+    void    pruneHistory();
     void    setDeliveryStatus(int status);
     bool    invokeBool(const char* what, const QString& method,
                        const QVariant& arg = QVariant());

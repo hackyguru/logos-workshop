@@ -9,7 +9,10 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
+#include <QRandomGenerator>
 #include <QUuid>
+
+#include <climits>
 
 // Content-topic format: /<app>/<version>/<subtopic>/<format>
 // The inference provider (logoscore CLI) subscribes to the exact same topic.
@@ -252,8 +255,12 @@ QString InferencePlugin::room() { return m_room; }
 // ── Prompt ───────────────────────────────────────────────────────────
 
 // Choose a provider from the verified roster: the preferred one if it's live
-// and not excluded, else freshest announces only (heard within 30s), lowest
-// load first, most recently seen as tiebreak.
+// and not excluded, else the lowest-load live provider — but RANDOMLY among all
+// providers tied at that minimum load. The old "most recently heard" tiebreak
+// made every idle user pick the same provider (the one that announced last), so
+// N users herded onto one operator instead of spreading across the fleet. The
+// load signal is up to one announce-interval stale, so at scale many providers
+// read as load 0 at once; random tie-break is what actually distributes them.
 const ProviderRec* InferencePlugin::pickProvider(QString& fpOut,
                                                  const QStringList& exclude) const
 {
@@ -267,17 +274,24 @@ const ProviderRec* InferencePlugin::pickProvider(QString& fpOut,
         }
     }
 
-    const ProviderRec* best = nullptr;
+    // First pass: the minimum load among live, non-excluded providers.
+    int minLoad = INT_MAX;
     for (auto it = m_providers.constBegin(); it != m_providers.constEnd(); ++it) {
         const ProviderRec& p = it.value();
         if (p.lastSeenMs < cutoff || exclude.contains(it.key())) continue;
-        if (!best || p.load < best->load ||
-            (p.load == best->load && p.lastSeenMs > best->lastSeenMs)) {
-            best  = &it.value();
-            fpOut = it.key();
-        }
+        if (p.load < minLoad) minLoad = p.load;
     }
-    return best;
+    if (minLoad == INT_MAX) return nullptr;   // none available
+
+    // Second pass: collect everyone tied at minLoad, then pick one at random.
+    QStringList tied;
+    for (auto it = m_providers.constBegin(); it != m_providers.constEnd(); ++it) {
+        const ProviderRec& p = it.value();
+        if (p.lastSeenMs < cutoff || exclude.contains(it.key())) continue;
+        if (p.load == minLoad) tied << it.key();
+    }
+    fpOut = tied.at(QRandomGenerator::global()->bounded(tied.size()));
+    return &m_providers.constFind(fpOut).value();
 }
 
 // Put one attempt of `rec` on the wire — sealed to the next untried provider,
@@ -340,7 +354,10 @@ QString InferencePlugin::sendPrompt(const QString& prompt)
     if (!m_started && !startDelivery()) return QString();
 
     PromptRec rec;
-    rec.id     = QUuid::createUuid().toString(QUuid::WithoutBraces).left(8);
+    // Full UUID (128-bit), not an 8-hex-char prefix: the id is the correlation
+    // key across the whole network, and a 32-bit id starts colliding around
+    // tens of thousands of prompts — reachable on a busy multi-user network.
+    rec.id     = QUuid::createUuid().toString(QUuid::WithoutBraces);
     rec.prompt = text;
     rec.sentMs = nowMs();
 
@@ -353,12 +370,27 @@ QString InferencePlugin::sendPrompt(const QString& prompt)
         rec.failed = true;
         m_prompts.prepend(rec);
         emit eventResponse("promptFailed", QVariantList{ rec.id });
+        pruneHistory();
         return rec.id;
     }
 
     m_prompts.prepend(rec);
     emit eventResponse("promptSent", QVariantList{ rec.id, m_room });
+    pruneHistory();
     return rec.id;
+}
+
+// Bound the in-memory exchange history on a long-lived user node. Drops the
+// oldest SETTLED (answered/failed) records past the cap; never drops a prompt
+// still in flight (its ephemeral keys are needed to open a late answer).
+void InferencePlugin::pruneHistory()
+{
+    const int cap = 200;
+    if (m_prompts.size() <= cap) return;
+    for (int i = m_prompts.size() - 1; i >= 0 && m_prompts.size() > cap; --i) {
+        if (m_prompts[i].answered || m_prompts[i].failed)
+            m_prompts.removeAt(i);
+    }
 }
 
 // Timeout/retry sweep: a prompt unanswered for m_timeoutMs is re-sent to the

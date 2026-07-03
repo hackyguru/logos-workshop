@@ -23,8 +23,15 @@ ProviderPlugin::ProviderPlugin(QObject* parent)
     , m_model(qEnvironmentVariable("INFERENCE_MODEL", "tinyllama"))
     , m_ollamaUrl(qEnvironmentVariable("OLLAMA_URL", "http://localhost:11434"))
 {
+    // Cap concurrent inferences. ollama serializes per model anyway, so beyond
+    // a small number extra prompts just queue and blow past the user's timeout;
+    // better to decline them so they fail over to a less-busy provider. 0/unset
+    // → default 4; set INFERENCE_MAX_INFLIGHT to tune.
+    const int cap = qEnvironmentVariableIntValue("INFERENCE_MAX_INFLIGHT");
+    m_maxInflight = cap > 0 ? cap : 4;
     qDebug() << "ProviderPlugin: created, id =" << m_id
-             << "model =" << m_model << "ollama =" << m_ollamaUrl;
+             << "model =" << m_model << "ollama =" << m_ollamaUrl
+             << "maxInflight =" << m_maxInflight;
 }
 
 ProviderPlugin::~ProviderPlugin() = default;
@@ -326,11 +333,25 @@ void ProviderPlugin::handleMessageReceived(const QVariantList& data)
         return;
     }
 
+    // Concurrency cap: at capacity, decline (don't answer) so the user's
+    // failover routes this prompt to a less-busy provider instead of it
+    // queueing here past the timeout. Our next announce carries the true load,
+    // so users stop picking us until we drain.
+    if (m_inflight >= m_maxInflight) {
+        qDebug() << "ProviderPlugin: at capacity (" << m_inflight << "/"
+                 << m_maxInflight << ") — declining prompt" << id;
+        return;
+    }
+
     ++m_promptsSeen;
     ++m_inflight;
     m_inflightIds.insert(id);
     m_lastPromptId = id;
     m_lastFrom     = fromLabel;
+    // Just hit the cap → announce "full" now instead of waiting up to 10s, so
+    // users stop routing to us promptly. (Balances the drain-side re-announce
+    // in sendResponse.)
+    if (m_inflight == m_maxInflight) sendAnnounce();
     qDebug() << "ProviderPlugin: prompt" << id << "from" << fromLabel
              << (replyPkB64.isEmpty() ? "(plaintext)" : "(sealed)")
              << "→ running" << m_model;
@@ -411,8 +432,12 @@ void ProviderPlugin::runInference(const QString& id, const QString& replyPkB64,
 void ProviderPlugin::sendResponse(const QString& id, const QString& replyPkB64,
                                   const QString& text, const QString& topic)
 {
+    const bool wasFull = (m_inflight >= m_maxInflight);
     if (m_inflight > 0) --m_inflight;
     m_inflightIds.remove(id);
+    // Just dropped below the cap → announce availability now so users can route
+    // to us again without waiting for the next periodic announce.
+    if (wasFull && m_inflight < m_maxInflight && m_started) sendAnnounce();
     if (!m_deliveryClient) return;
 
     QJsonObject resp;
