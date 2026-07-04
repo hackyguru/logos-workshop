@@ -341,7 +341,7 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 10
                 spacing: 8
-                Text { text: "Room"; color: "#555"; font.pixelSize: 13 }
+                Text { text: "Marketplace"; color: "#555"; font.pixelSize: 13 }
                 // No binding to currentRoom — that would clobber typing on every poll.
                 TextField {
                     id: roomField
