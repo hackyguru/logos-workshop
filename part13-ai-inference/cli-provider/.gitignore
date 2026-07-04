@@ -2,3 +2,6 @@
 modules/
 # Daemon / provider logs
 *.log
+
+# Oracle instance state (deploy/)
+deploy/.instance.env

@@ -30,6 +30,16 @@ DM_FLAKE="${DM_FLAKE:-github:logos-co/logos-delivery-module/v0.1.1#lgx}"
 log() { printf '\033[36m[setup]\033[0m %s\n' "$*"; }
 err() { printf '\033[31m[setup] %s\033[0m\n' "$*" >&2; }
 
+# manifest/variant platform key for this host (the CLI runtime looks up
+# manifest.main["<key>-dev"] first, then manifest.main["<key>"]).
+case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64)  HOSTKEY="darwin-arm64" ;;
+    Linux-aarch64) HOSTKEY="linux-arm64" ;;
+    Linux-x86_64)  HOSTKEY="linux-amd64" ;;
+    *) err "unsupported platform: $(uname -s)-$(uname -m)"; exit 1 ;;
+esac
+DEVKEY="$HOSTKEY-dev"
+
 find_nix() {
     if command -v nix >/dev/null 2>&1; then command -v nix; return; fi
     [[ -x /nix/var/nix/profiles/default/bin/nix ]] && { echo /nix/var/nix/profiles/default/bin/nix; return; }
@@ -41,10 +51,10 @@ extract_variant() {
     local lgx="$1" dst="$2" tmp v=""
     tmp="$(mktemp -d)"
     tar xzf "$lgx" -C "$tmp"
-    for cand in darwin-arm64-dev darwin-arm64; do
+    for cand in "$DEVKEY" "$HOSTKEY"; do
         [[ -d "$tmp/variants/$cand" ]] && { v="$cand"; break; }
     done
-    [[ -n "$v" ]] || { err "no darwin variant inside $lgx"; rm -rf "$tmp"; exit 1; }
+    [[ -n "$v" ]] || { err "no $HOSTKEY variant inside $lgx (has: $(ls "$tmp/variants" 2>/dev/null | tr '\n' ' '))"; rm -rf "$tmp"; exit 1; }
     log "extracting variant '$v' from $(basename "$lgx")"
     rm -rf "$dst"; mkdir -p "$dst"
     cp -R "$tmp/variants/$v/." "$dst/"
@@ -79,12 +89,13 @@ dlib="$(cd "$DEST" && ls delivery_module_plugin.* 2>/dev/null | head -1)"
 [[ -n "$dlib" ]] || { err "no delivery_module_plugin.* landed in $DEST"; exit 1; }
 if [[ -f "$DEST/manifest.json" ]] && command -v jq >/dev/null 2>&1; then
     tmp="$(mktemp)"
-    jq --arg lib "$dlib" '.main["darwin-arm64-dev"] //= $lib | .main["darwin-arm64"] //= $lib' \
+    jq --arg lib "$dlib" --arg dev "$DEVKEY" --arg host "$HOSTKEY" \
+        '.main[$dev] //= $lib | .main[$host] //= $lib' \
         "$DEST/manifest.json" > "$tmp" && mv "$tmp" "$DEST/manifest.json"
 else
     cat > "$DEST/manifest.json" <<JSON
 { "name":"delivery_module","version":"1.1.0","type":"core","dependencies":[],
-  "main":{"darwin-arm64-dev":"$dlib","darwin-arm64":"$dlib","linux-amd64":"delivery_module_plugin.so","linux-arm64":"delivery_module_plugin.so"} }
+  "main":{"$DEVKEY":"$dlib","$HOSTKEY":"$dlib"} }
 JSON
 fi
 log "delivery_module (dev variant) ready at: $DEST"
@@ -114,7 +125,7 @@ plib="$(cd "$PROV_DEST" && ls inference_provider_plugin.* 2>/dev/null | head -1)
 [[ -n "$plib" ]] || { err "inference_provider_plugin.* missing after staging"; exit 1; }
 cat > "$PROV_DEST/manifest.json" <<JSON
 { "name":"inference_provider","version":"0.1.0","type":"core","dependencies":["delivery_module"],
-  "main":{"darwin-arm64-dev":"$plib","darwin-arm64":"$plib"} }
+  "main":{"$DEVKEY":"$plib","$HOSTKEY":"$plib"} }
 JSON
 log "inference_provider ready at: $PROV_DEST"
 

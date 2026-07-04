@@ -1,0 +1,30 @@
+#cloud-config
+# First-boot setup for the Oracle A1 inference-provider VM (Ubuntu 24.04 aarch64).
+# Installs ollama + tinyllama and nix; opens the Waku TCP port in the instance
+# firewall (OCI Ubuntu images ship a restrictive iptables ruleset — the OCI
+# security list alone is not enough).
+package_update: true
+packages:
+  - jq
+  - curl
+  - git
+  - rsync
+  - tmux
+  - xz-utils
+
+runcmd:
+  # Waku TCP port (must match INFERENCE_TCPPORT in inference-provider.sh)
+  - iptables -I INPUT 5 -p tcp --dport 60010 -m state --state NEW -j ACCEPT
+  - netfilter-persistent save || true
+  # ollama (systemd service) + the model
+  - curl -fsSL https://ollama.com/install.sh | sh
+  - |
+    for i in $(seq 1 60); do
+      curl -sf http://127.0.0.1:11434/api/tags >/dev/null && break
+      sleep 2
+    done
+    ollama pull tinyllama
+  # nix (Determinate installer: multi-user daemon, flakes enabled by default)
+  - curl --proto '=https' --tlsv1.2 -sSf -L https://install.determinate.systems/nix | sh -s -- install linux --no-confirm
+  # marker the deploy script waits for
+  - touch /var/lib/cloud/instance/logos-bootstrap-done
