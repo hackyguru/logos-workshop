@@ -131,3 +131,8 @@ pkill -9 -f "logos_host"
 ## Licence
 
 Both MIT and Apache-2.0 — pick whichever works for you.
+
+> **Part 13 — AI Inference marketplace** has graduated to its own repository:
+> [hackyguru/logos-ai](https://github.com/hackyguru/logos-ai) — decentralized,
+> E2E-encrypted AI inference over Logos delivery, with marketplace discovery,
+> a headless provider for VPS deployment, and a live network metrics dashboard.
