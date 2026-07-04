@@ -143,7 +143,8 @@ export default function Home() {
           </div>
           <p style={{ color: "var(--text-muted)", fontSize: 12 }} className="mt-1">
             live from <span className="mono">{snap?.contentTopic ?? "/inference/1/discovery/json"}</span>
-            {" "}· cluster {snap?.cluster ?? 2} · js-waku (server-side, TCP)
+            {" "}· cluster {snap?.cluster ?? 2} · default room <span className="mono">agora</span>
+            {" "}· js-waku (server-side, TCP)
           </p>
           {(snap?.error || fetchErr) && (
             <p style={{ color: "var(--status-serious)", fontSize: 12 }} className="mt-2">
