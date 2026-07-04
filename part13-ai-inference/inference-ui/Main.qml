@@ -137,7 +137,7 @@ Item {
         if (n === 0) return modelFilter
             ? "⚠ no live provider serves " + modelFilter + " — prompts will wait/fail"
             : "⚠ no live providers yet — listening for capability cards…"
-        return "Auto: least-loaded of " + n + " provider(s)"
+        return "Auto: best of " + n + " available provider(s)"
                + (modelFilter ? " serving " + modelFilter : "")
     }
 
@@ -411,7 +411,7 @@ Item {
                         font.pixelSize: 12
                         // Auto + only live providers that serve the chosen model.
                         model: {
-                            var m = [{ text: "Auto — least loaded", fp: "" }]
+                            var m = [{ text: "Auto — pick for me", fp: "" }]
                             for (var i = 0; i < providers.length; i++)
                                 if (providers[i].live
                                     && providerServes(providers[i], modelFilter))
@@ -523,16 +523,14 @@ Item {
                                 font.pixelSize: 12; color: "#555"
                                 elide: Text.ElideRight
                             }
-                            // Free/busy at a glance instead of a bare number.
+                            // Users only need to know if it can take a prompt NOW.
+                            // Slot counts are operator telemetry — the auto-picker
+                            // already weighs load internally.
                             Text {
-                                text: modelData.cap > 0
-                                      ? (modelData.load >= modelData.cap
-                                         ? "⛔ full"
-                                         : "● " + (modelData.cap - modelData.load) + " free")
-                                      : "load " + modelData.load
+                                visible: modelData.cap > 0 && modelData.load >= modelData.cap
+                                text: "busy"
                                 font.pixelSize: 11
-                                color: modelData.cap > 0 && modelData.load >= modelData.cap
-                                       ? "#c5221f" : "#188038"
+                                color: "#c5221f"
                             }
                             Text {
                                 text: modelData.price || "free"
