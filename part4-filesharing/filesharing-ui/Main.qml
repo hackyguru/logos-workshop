@@ -186,7 +186,21 @@ Item {
         storageStatus = 1
         lastError = ""
 
-        const cfg = JSON.stringify({ "log-level": "INFO" })
+        // Join the same network as the part12 seeder so its CIDs resolve.
+        // Without bootstrap nodes the storage node is isolated (no peers) and
+        // remote CIDs never download. SPRs mirror part12 seeder/config.json;
+        // ports differ from the seeder's (8081/8091) so both run on one machine.
+        const cfg = JSON.stringify({
+            "log-level": "INFO",
+            "listen-port": 8082,
+            "disc-port": 8092,
+            "bootstrap-node": [
+                "spr:CiUIAhIhAlPbmW9J08tDI6pIV-C-XvvFTCDN_Vih8I3ZTOeOuf5rEgIDARo8CicAJQgCEiECU9uZb0nTy0MjqkhX4L5e-8VMIM39WKHwjdlM5465_msQ9tr10QYaCwoJBKX1-QWRAh-aKkcwRQIhAN5zU6DDxSpzqvbFa_iuliroxBx7m86wOO9C1AcKOBqRAiAW3yEXyXtSgXXWzarU_j7E0Ad6HsVAOEvdrpX9FB-i7g",
+                "spr:CiUIAhIhA4_xqh_E3HDnV4Gbe159LCAuv03UxcDoGloH1Dhoqy_qEgIDARo8CicAJQgCEiEDj_GqH8TccOdXgZt7Xn0sIC6_TdTFwOgaWgfUOGirL-oQltv10QYaCwoJBKRc8f2RAh-aKkcwRQIhAMWsLt8S694icCKGEH5IB4SyIqUiNNgMmzGJ8n4Wl8udAiB8j3R62SceuRDxBT--scWKN2i22-OT_6-wF0r1Md5kVg",
+                "spr:CiUIAhIhAj5vZtyN69MB1cmKhnbxlUo4sp7KfeK1sMipjKpBD47dEgIDARo8CicAJQgCEiECPm9m3I3r0wHVyYqGdvGVSjiynsp94rWwyKmMqkEPjt0Qltv10QYaCwoJBC5lcMmRAh-aKkcwRQIhAPAJt1EiI4pCnLQUivbEs2cSHhE6LPJZYzvVrE1vlf0vAiBCN5nTObJmQGtP4H5d_h5uk_7l0iYPI6Pz0eG33CXrJQ",
+                "spr:CiUIAhIhAgX6x7NWUskBQ1a5CvhQ9qe6nAcgE-C6GLjAfnpyRK_6EgIDARo8CicAJQgCEiECBfrHs1ZSyQFDVrkK-FD2p7qcByAT4LoYuMB-enJEr_oQltv10QYaCwoJBKX194aRAh-aKkYwRAIgUhSpUddgFvvs5qO0DncAzfr2lwPl_DdjuhUM0icRiMQCIH3rhiOEBoNXAW9GzsI0GR9WpUEqk15Ij8-SeHqTFOpm"
+            ]
+        })
         // Helper — interpret the init/start return shape: plain bool from
         // storage_module's current build, or LogosResult struct in newer ones.
         function interpretBoolResult(raw) {

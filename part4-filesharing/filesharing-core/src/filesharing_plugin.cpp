@@ -64,6 +64,19 @@ QString defaultStorageConfig()
     cfg["data-dir"]  = dataRoot;
     cfg["log-level"] = "INFO";
     cfg["log-file"]  = dataRoot + "/storage.log";
+
+    // Join the same network as the part12 seeder so its CIDs are discoverable.
+    // Without bootstrap nodes the storage node is isolated (no peers) and can't
+    // resolve remote CIDs. These SPRs mirror part12-seed-storage/seeder/config.json.
+    // Ports differ from the seeder's (8081/8091) so both can run on one machine.
+    QJsonArray bootstrap;
+    bootstrap.append(QStringLiteral("spr:CiUIAhIhAlPbmW9J08tDI6pIV-C-XvvFTCDN_Vih8I3ZTOeOuf5rEgIDARo8CicAJQgCEiECU9uZb0nTy0MjqkhX4L5e-8VMIM39WKHwjdlM5465_msQ9tr10QYaCwoJBKX1-QWRAh-aKkcwRQIhAN5zU6DDxSpzqvbFa_iuliroxBx7m86wOO9C1AcKOBqRAiAW3yEXyXtSgXXWzarU_j7E0Ad6HsVAOEvdrpX9FB-i7g"));
+    bootstrap.append(QStringLiteral("spr:CiUIAhIhA4_xqh_E3HDnV4Gbe159LCAuv03UxcDoGloH1Dhoqy_qEgIDARo8CicAJQgCEiEDj_GqH8TccOdXgZt7Xn0sIC6_TdTFwOgaWgfUOGirL-oQltv10QYaCwoJBKRc8f2RAh-aKkcwRQIhAMWsLt8S694icCKGEH5IB4SyIqUiNNgMmzGJ8n4Wl8udAiB8j3R62SceuRDxBT--scWKN2i22-OT_6-wF0r1Md5kVg"));
+    bootstrap.append(QStringLiteral("spr:CiUIAhIhAj5vZtyN69MB1cmKhnbxlUo4sp7KfeK1sMipjKpBD47dEgIDARo8CicAJQgCEiECPm9m3I3r0wHVyYqGdvGVSjiynsp94rWwyKmMqkEPjt0Qltv10QYaCwoJBC5lcMmRAh-aKkcwRQIhAPAJt1EiI4pCnLQUivbEs2cSHhE6LPJZYzvVrE1vlf0vAiBCN5nTObJmQGtP4H5d_h5uk_7l0iYPI6Pz0eG33CXrJQ"));
+    bootstrap.append(QStringLiteral("spr:CiUIAhIhAgX6x7NWUskBQ1a5CvhQ9qe6nAcgE-C6GLjAfnpyRK_6EgIDARo8CicAJQgCEiECBfrHs1ZSyQFDVrkK-FD2p7qcByAT4LoYuMB-enJEr_oQltv10QYaCwoJBKX194aRAh-aKkYwRAIgUhSpUddgFvvs5qO0DncAzfr2lwPl_DdjuhUM0icRiMQCIH3rhiOEBoNXAW9GzsI0GR9WpUEqk15Ij8-SeHqTFOpm"));
+    cfg["bootstrap-node"] = bootstrap;
+    cfg["listen-port"]    = 8082;
+    cfg["disc-port"]      = 8092;
     return variantToJson(cfg);
 }
 
