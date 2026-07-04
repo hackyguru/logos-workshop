@@ -65,6 +65,36 @@ const state: State = (g.__inferenceMetrics ??= {
   lastCardAt: 0,
 });
 
+// Message handler + decoder live at module scope (not inside start()'s
+// closure) so the reconnect loop can re-arm the filter subscription across
+// dev-server hot reloads.
+function onWakuMessage(msg: { payload?: Uint8Array }): void {
+  if (!msg.payload) return;
+  handleCard(Buffer.from(msg.payload).toString("utf8"));
+}
+
+function makeDecoder() {
+  const routingInfo = createRoutingInfo(NETWORK, { contentTopic: CONTENT_TOPIC });
+  return createDecoder(CONTENT_TOPIC, routingInfo);
+}
+
+// Static bootstrap peers aren't redialed forever by js-waku: one provider
+// redeploy (daemon restart) is enough to strand the node at 0 peers for good.
+// Heal it: when peerless, redial the bootstrap set and re-arm the filter
+// subscription (the old one died with the peers).
+async function reconnectTick(): Promise<void> {
+  const node = state.node;
+  if (!node) return;
+  if (node.libp2p.getPeers().length > 0) return;
+  for (const addr of BOOTSTRAP) {
+    try { await node.dial(addr); } catch { /* peer down — try the next */ }
+  }
+  if (node.libp2p.getPeers().length > 0) {
+    try { node.filter.unsubscribeAll(); } catch { /* no active subscription */ }
+    try { await node.filter.subscribe([makeDecoder()], onWakuMessage); } catch { /* next tick retries */ }
+  }
+}
+
 function fingerprintOf(signPk: Buffer): string {
   // Must match InferenceIdentity::fingerprintOf: first 20 bytes of
   // SHA256(ed25519 public key), hex.
@@ -142,8 +172,7 @@ function sampleHistory(): void {
 }
 
 async function start(): Promise<void> {
-  const routingInfo = createRoutingInfo(NETWORK, { contentTopic: CONTENT_TOPIC });
-  const decoder = createDecoder(CONTENT_TOPIC, routingInfo);
+  const decoder = makeDecoder();
 
   const node = await createLightNode({
     networkConfig: NETWORK,
@@ -158,22 +187,26 @@ async function start(): Promise<void> {
   await node.start();
   state.node = node;
 
-  await node.filter.subscribe([decoder], (msg) => {
-    if (!msg.payload) return;
-    handleCard(Buffer.from(msg.payload).toString("utf8"));
-  });
+  await node.filter.subscribe([decoder], onWakuMessage);
 
   // Backfill from store so a fresh dashboard isn't blind for 10s (and shows
   // providers that announced recently even if they just went quiet).
   try {
-    await node.store.queryWithOrderedCallback([decoder], (msg) => {
-      if (msg.payload) handleCard(Buffer.from(msg.payload).toString("utf8"));
-    }, { timeStart: new Date(Date.now() - 3600_000) });
+    await node.store.queryWithOrderedCallback([decoder], onWakuMessage,
+      { timeStart: new Date(Date.now() - 3600_000) });
   } catch {
     // store is best-effort — filter keeps us live regardless
   }
 
   setInterval(sampleHistory, 10_000).unref();
+}
+
+// Armed at module scope (once per process) so a hot-reload of this file also
+// arms it for an already-running node from an older module instance.
+const gTimers = globalThis as typeof globalThis & { __inferenceMetricsReconnect?: boolean };
+if (!gTimers.__inferenceMetricsReconnect) {
+  gTimers.__inferenceMetricsReconnect = true;
+  setInterval(() => { void reconnectTick(); }, 30_000).unref();
 }
 
 export function ensureStarted(): void {
