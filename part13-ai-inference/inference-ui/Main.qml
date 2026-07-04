@@ -10,7 +10,7 @@ Item {
     property int    deliveryStatus: 0
     property var    exchanges: []
     property string myId: ""
-    property string currentRoom: "lobby"
+    property string currentRoom: "agora"
     property bool   identityInit: false
     property bool   identityLocked: false
     property string identityFp: ""
@@ -46,7 +46,7 @@ Item {
             const v = unwrapRemote(callInf("myId", []), "")
             myId = (typeof v === "string") ? v : ""
         }
-        const r = unwrapRemote(callInf("room", []), "lobby")
+        const r = unwrapRemote(callInf("room", []), "agora")
         if (typeof r === "string" && r.length > 0) currentRoom = r
         const inner = unwrapRemote(callInf("listExchanges", []), [])
         try {

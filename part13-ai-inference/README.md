@@ -76,13 +76,13 @@ part13-ai-inference/
 ```bash
 # 1. provider (a machine with ollama): pull the model, stage + run
 ollama pull tinyllama
-cd cli-provider && ./setup-modules.sh && ./inference-provider.sh lobby
+cd cli-provider && ./setup-modules.sh && ./inference-provider.sh agora
 
 # 2. user (Basecamp, on a machine with the Logos nix toolchain): build + install
 cd ../inference-core && nix build '.#lgx-portable'
 cd ../inference-ui   && nix build '.#lgx-portable'    # install both .lgx into Basecamp
 
-# 3. in Basecamp: open "AI Inference" → room "lobby" → Start → type a prompt → Send
+# 3. in Basecamp: open "AI Inference" → room "agora" → Start → type a prompt → Send
 ```
 
 ## Status

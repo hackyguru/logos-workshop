@@ -17,7 +17,7 @@ ollama pull tinyllama
 
 cd part13-ai-inference/cli-provider
 ./setup-modules.sh                 # one-time: nix-builds the dev delivery_module + inference_provider
-./inference-provider.sh lobby      # answer prompts on /inference/1/lobby/json
+./inference-provider.sh agora      # answer prompts on /inference/1/agora/json
 ```
 
 Expected:
@@ -26,8 +26,8 @@ Expected:
 [provider] ollama up, model 'tinyllama' available
 [provider] daemon is up
 [provider] inference_provider loaded
-[provider] start(room=lobby, model=tinyllama, tcpPort=60010)...
-[provider] ready — answering prompts on /inference/1/lobby/json with 'tinyllama'
+[provider] start(room=agora, model=tinyllama, tcpPort=60010)...
+[provider] ready — answering prompts on /inference/1/agora/json with 'tinyllama'
 [provider] provider id: cli-llm-1a2b
 ```
 
@@ -44,15 +44,15 @@ BIP-39 mnemonic (else a random seed-file identity, no mnemonic).
 Identity knobs (provider):
 
 ```bash
-IMPORT_MNEMONIC="twelve words …" ./inference-provider.sh lobby   # recreate a known identity
-IDENTITY_PASSPHRASE=hunter2       ./inference-provider.sh lobby   # unlock an encrypted key file
+IMPORT_MNEMONIC="twelve words …" ./inference-provider.sh agora   # recreate a known identity
+IDENTITY_PASSPHRASE=hunter2       ./inference-provider.sh agora   # unlock an encrypted key file
 ```
 
 **Run a second provider** (n→n) — another model on another Waku port:
 
 ```bash
 INFERENCE_TCPPORT=60030 INFERENCE_MODEL=llama3.2 \
-  LOGOS_IDENTITY_DIR=~/.logos-inference-2 ./inference-provider.sh lobby
+  LOGOS_IDENTITY_DIR=~/.logos-inference-2 ./inference-provider.sh agora
 ```
 
 Users see both in the roster and can pick between them (or let it auto-balance).
@@ -89,7 +89,7 @@ Waku port `60000`, the provider uses `60010` (set via `INFERENCE_TCPPORT`).
 2. **First run:** the amber card asks you to **Create new account** (shows the
    seed phrase once — write it down) or **Import** an existing one. A locked key
    file shows an **Unlock** card instead.
-3. Set **Room** to `lobby` (must match the provider) and **Join**.
+3. Set **Room** to `agora` (must match the provider) and **Join**.
 4. **Start** — the status dot goes green (local node up).
 5. Once a provider announce is heard, the chip shows `🔒 N provider(s) — prompts
    encrypted`. Optionally pick a specific **Provider** from the dropdown or tick

@@ -38,10 +38,10 @@ instead of a static "pong".
 ```bash
 cd cli-provider
 ./setup-modules.sh                 # one-time (nix-builds the dev modules)
-./inference-provider.sh lobby      # listen + answer on /inference/1/lobby/json
+./inference-provider.sh agora      # listen + answer on /inference/1/agora/json
 ```
 
-Leave it running. In Basecamp, open **AI Inference**, join room `lobby`, Start,
+Leave it running. In Basecamp, open **AI Inference**, join room `agora`, Start,
 type a prompt, Send. Each prompt prints here as `prompts: N · responses: N`, and
 the Basecamp UI shows the model's reply.
 
@@ -50,7 +50,7 @@ the Basecamp UI shows the model's reply.
 ```bash
 logoscore -D -m ./modules
 logoscore load-module inference_provider                 # pulls in delivery_module
-logoscore call inference_provider start lobby            # createNode/start/subscribe
+logoscore call inference_provider start agora            # createNode/start/subscribe
 logoscore call inference_provider stats                  # promptsSeen / responsesSent
 ```
 
@@ -62,7 +62,7 @@ Inside the module, each prompt becomes:
 
 | Env / arg | Default | Meaning |
 |-----------|---------|---------|
-| `$1` / `ROOM` | `lobby` | Room → topic `/inference/1/<room>/json` |
+| `$1` / `ROOM` | `agora` | Room → topic `/inference/1/<room>/json` |
 | `INFERENCE_MODEL` | `tinyllama` | default ollama model to run |
 | `INFERENCE_MODELS` | *(unset)* | comma-separated list of models to advertise on the marketplace (first = default) |
 | `OLLAMA_URL` | `http://localhost:11434` | ollama HTTP endpoint |

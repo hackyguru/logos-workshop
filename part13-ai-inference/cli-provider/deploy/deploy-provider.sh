@@ -8,7 +8,7 @@
 #   ./deploy-provider.sh <public-ip>
 #
 # Tunables:
-#   ROOM=lobby INFERENCE_MODEL=tinyllama ./deploy-provider.sh
+#   ROOM=agora INFERENCE_MODEL=tinyllama ./deploy-provider.sh
 #   LOGOSCORE_REV=<sha>   logoscore-cli rev to build (default: the rev verified
 #                         against this repo's provider on 2026-07-03)
 #
@@ -20,7 +20,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLI_DIR="$(dirname "$HERE")"   # …/cli-provider
 
-ROOM="${ROOM:-lobby}"
+ROOM="${ROOM:-agora}"
 INFERENCE_MODEL="${INFERENCE_MODEL:-tinyllama}"
 # Marketplace capability card: all models served (csv, first = default).
 INFERENCE_MODELS="${INFERENCE_MODELS:-$INFERENCE_MODEL}"

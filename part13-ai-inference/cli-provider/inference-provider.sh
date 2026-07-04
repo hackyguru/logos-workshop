@@ -19,7 +19,7 @@
 #   logoscore call inference_provider stats           # promptsSeen / responsesSent (polled below)
 #
 # Usage:
-#   ./inference-provider.sh [room]                 # default room: lobby
+#   ./inference-provider.sh [room]                 # default room: agora
 #   ROOM=demo ./inference-provider.sh
 #   INFERENCE_MODEL=llama3.2 ./inference-provider.sh
 #   OLLAMA_URL=http://host:11434 ./inference-provider.sh
@@ -28,7 +28,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOM="${1:-${ROOM:-lobby}}"
+ROOM="${1:-${ROOM:-agora}}"
 TOPIC="/inference/1/${ROOM}/json"
 export INFERENCE_TCPPORT="${INFERENCE_TCPPORT:-60010}"
 export INFERENCE_MODEL="${INFERENCE_MODEL:-tinyllama}"

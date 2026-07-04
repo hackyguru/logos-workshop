@@ -160,4 +160,4 @@ else
 fi
 
 log "done. modules staged: $(cd "$HERE/modules" && ls | tr '\n' ' ')"
-log "next: ./inference-provider.sh lobby   (needs ollama running with the model pulled)"
+log "next: ./inference-provider.sh agora   (needs ollama running with the model pulled)"

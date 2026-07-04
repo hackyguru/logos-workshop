@@ -126,7 +126,7 @@ Why `curl` and not Qt Network? It keeps the module's build to Qt Core only
 
 | Key | Default | Where |
 |-----|---------|-------|
-| topic room | `lobby` | both sides — must match |
+| topic room | `agora` | both sides — must match |
 | `INFERENCE_MODEL` | `tinyllama` | provider (ollama model) |
 | `OLLAMA_URL` | `http://localhost:11434` | provider |
 | `INFERENCE_TCPPORT` | provider `60010`, Basecamp `60000` | Waku port (distinct so both run on one machine) |

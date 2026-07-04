@@ -114,7 +114,7 @@ private:
     static qint64 nowMs();
 
     QString           m_myId;
-    QString           m_room = "lobby";
+    QString           m_room = "agora";
     QList<PromptRec>  m_prompts;   // newest first
     QHash<QString, ProviderRec> m_providers;   // fingerprint → verified announce
     QSet<QString>     m_sessionSubs;           // provider session topics we joined

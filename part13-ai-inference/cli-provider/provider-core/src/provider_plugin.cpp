@@ -151,7 +151,7 @@ bool ProviderPlugin::importAccount(const QString& mnemonic, const QString& passp
 
 bool ProviderPlugin::start(const QString& room)
 {
-    const QString clean = room.trimmed().isEmpty() ? QStringLiteral("lobby") : room.trimmed();
+    const QString clean = room.trimmed().isEmpty() ? QStringLiteral("agora") : room.trimmed();
 
     ensureIdentity();
 
