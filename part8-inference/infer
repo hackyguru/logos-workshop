@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+#
+# infer — headless prompt responder over logos-delivery, backed by a local
+# Ollama model. Transport lives in the `inference` core module (loaded into a
+# headless logoscore daemon); inference runs here in this script.
+#
+#   infer start          run the responder: listen for prompts, run the model,
+#                         publish answers back. Blocks until Ctrl-C.
+#   infer ask "<prompt>"  send a prompt to a running responder and print the
+#                         answer (used for the local self-echo demo / as a client).
+#   infer stop            stop the module + daemon.
+#
+# Config via env:
+#   LOGOSCORE             path to the logoscore binary (auto-detected if unset)
+#   MODULES_DIR           dir holding inference + delivery_module plugins
+#                         (default: macOS Basecamp modules dir)
+#   INFER_MODEL           Ollama model name              (default: llama3)
+#   OLLAMA_URL            Ollama generate endpoint        (default: http://localhost:11434/api/generate)
+#   INFER_POLL_INTERVAL   seconds between queue polls      (default: 1)
+#   INFERENCE_TCPPORT     override P2P port for a second node on one machine
+#
+set -euo pipefail
+
+MODULE="inference"
+MODEL="${INFER_MODEL:-llama3}"
+OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434/api/generate}"
+POLL_INTERVAL="${INFER_POLL_INTERVAL:-1}"
+
+# ── locate logoscore ─────────────────────────────────────────────────
+LOGOSCORE="${LOGOSCORE:-}"
+if [[ -z "$LOGOSCORE" ]]; then
+  if command -v logoscore >/dev/null 2>&1; then
+    LOGOSCORE="$(command -v logoscore)"
+  else
+    # logoscore is NOT in the Basecamp app bundle — it's built separately from
+    # `nix build github:logos-co/logos-logoscore-cli --out-link ./logos`, which
+    # produces ./logos/bin/logoscore. Look for that result next to this script
+    # and in the current dir.
+    HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    for c in \
+      "$HERE/logos/bin/logoscore" \
+      "$HERE/../logos/bin/logoscore" \
+      "./logos/bin/logoscore" \
+      "../logos/bin/logoscore" \
+      "$HOME/.local/bin/logoscore"; do
+      if [[ -x "$c" ]]; then LOGOSCORE="$c"; break; fi
+    done
+  fi
+fi
+if [[ -z "$LOGOSCORE" || ! -x "$LOGOSCORE" ]]; then
+  echo "infer: logoscore not found." >&2
+  echo "  Build it:  nix build 'github:logos-co/logos-logoscore-cli' --out-link ./logos" >&2
+  echo "  Or set:    LOGOSCORE=/path/to/logos/bin/logoscore" >&2
+  exit 1
+fi
+
+MODULES_DIR="${MODULES_DIR:-$HOME/Library/Application Support/Logos/LogosBasecamp/modules}"
+
+core() { "$LOGOSCORE" "$@"; }
+
+# Decode the sentinel-wrapped base64 JSON the module returns, from whatever
+# decoration logoscore wraps around it. Prints the JSON (or nothing).
+extract_json() {
+  local tok
+  tok="$(grep -oE 'INFERJSON:[A-Za-z0-9+/=]*:ENDJSON' || true)"
+  [[ -z "$tok" ]] && return 0
+  tok="${tok#INFERJSON:}"; tok="${tok%:ENDJSON}"
+  printf '%s' "$tok" | base64 --decode 2>/dev/null || true
+}
+
+require_module_installed() {
+  if ! ls "$MODULES_DIR"/*inference* >/dev/null 2>&1; then
+    cat >&2 <<EOF
+infer: the 'inference' plugin is not installed in:
+  $MODULES_DIR
+
+Build and install it headlessly (see part8-inference/README.md):
+  cd inference-core
+  nix build '.#lgx-portable' --out-link result-portable
+  ../../pm/bin/lgpm --modules-dir "$MODULES_DIR" install --file result-portable/*.lgx
+
+delivery_module must be installed in the same dir, e.g.:
+  nix build 'github:logos-co/logos-delivery-module' --out-link result-delivery
+  ../../pm/bin/lgpm --modules-dir "$MODULES_DIR" install --file result-delivery/*.lgx
+EOF
+    exit 1
+  fi
+}
+
+wait_ready() {
+  local tries=0
+  until core status >/dev/null 2>&1; do
+    sleep 0.2
+    tries=$((tries + 1))
+    if [[ $tries -gt 100 ]]; then
+      echo "infer: daemon did not become ready" >&2
+      exit 1
+    fi
+  done
+}
+
+bring_up_daemon() {
+  require_module_installed
+  echo "[infer] starting logoscore daemon (modules: $MODULES_DIR)"
+  core -D -m "$MODULES_DIR" &
+  wait_ready
+  core load-module delivery_module >/dev/null 2>&1 || true
+  core load-module "$MODULE"
+}
+
+# Run one prompt through Ollama, print the answer text.
+run_inference() {
+  python3 - "$MODEL" "$OLLAMA_URL" "$1" <<'PY'
+import sys, json, urllib.request
+model, url, prompt = sys.argv[1], sys.argv[2], sys.argv[3]
+body = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode()
+req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+try:
+    with urllib.request.urlopen(req, timeout=600) as r:
+        print(json.loads(r.read().decode()).get("response", "").strip())
+except Exception as e:
+    print(f"[inference error: {e}]")
+PY
+}
+
+# ── subcommands ──────────────────────────────────────────────────────
+
+cmd_start() {
+  bring_up_daemon
+  core call "$MODULE" start >/dev/null
+  echo "[infer] responder up — model '$MODEL', topic /inference/1/prompt/json"
+  echo "[infer] Ctrl-C to stop."
+
+  trap 'echo; echo "[infer] stopping…"; core call "'"$MODULE"'" stop >/dev/null 2>&1 || true; core stop >/dev/null 2>&1 || true; exit 0' INT TERM
+
+  while true; do
+    pending="$(core call "$MODULE" takePending 2>/dev/null | extract_json)"
+    if [[ -n "$pending" && "$pending" != "[]" ]]; then
+      # Emit one tab-separated line per queued prompt: id <tab> replyTopic <tab> base64(prompt)
+      while IFS=$'\t' read -r id reply_topic prompt_b64; do
+        [[ -z "$id" ]] && continue
+        prompt="$(printf '%s' "$prompt_b64" | base64 --decode)"
+        echo "[infer] prompt $id: ${prompt:0:80}"
+        answer="$(run_inference "$prompt")"
+        if core call "$MODULE" reply "$reply_topic" "$id" "$answer" >/dev/null 2>&1; then
+          echo "[infer] replied $id"
+        else
+          echo "[infer] reply failed for $id" >&2
+        fi
+      done < <(printf '%s' "$pending" | python3 -c '
+import sys, json, base64
+for it in json.loads(sys.stdin.read() or "[]"):
+    pid = it.get("id", ""); rt = it.get("reply", ""); pr = it.get("prompt", "")
+    print(f"{pid}\t{rt}\t" + base64.b64encode(pr.encode()).decode())
+')
+    fi
+    sleep "$POLL_INTERVAL"
+  done
+}
+
+cmd_ask() {
+  local prompt="${1:-}"
+  if [[ -z "$prompt" ]]; then echo "usage: infer ask \"<prompt>\"" >&2; exit 2; fi
+
+  # Talk to the daemon started by `infer start` (same node → gossipsub
+  # self-echo delivers our prompt to the responder, and its reply back to us).
+  if ! core status >/dev/null 2>&1; then
+    echo "infer: no running daemon — start the responder first with 'infer start'" >&2
+    exit 1
+  fi
+
+  local id
+  id="$(uuidgen 2>/dev/null || python3 -c 'import uuid;print(uuid.uuid4())')"
+  core call "$MODULE" ask "$id" "$prompt" >/dev/null
+  echo "[infer] asked ($id) — waiting for answer…" >&2
+
+  local i
+  for i in $(seq 1 600); do
+    local replies answer
+    replies="$(core call "$MODULE" takeReplies 2>/dev/null | extract_json)"
+    if [[ -n "$replies" && "$replies" != "[]" ]]; then
+      answer="$(printf '%s' "$replies" | python3 -c '
+import sys, json
+target = sys.argv[1]
+for it in json.loads(sys.stdin.read() or "[]"):
+    if it.get("id") == target:
+        print(it.get("answer", "")); break
+' "$id")"
+      if [[ -n "$answer" ]]; then
+        printf '%s\n' "$answer"
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  echo "infer: timed out waiting for an answer" >&2
+  exit 1
+}
+
+cmd_stop() {
+  core call "$MODULE" stop >/dev/null 2>&1 || true
+  core stop >/dev/null 2>&1 || true
+  echo "[infer] stopped."
+}
+
+case "${1:-}" in
+  start) shift; cmd_start "$@" ;;
+  ask)   shift; cmd_ask "$@" ;;
+  stop)  shift; cmd_stop "$@" ;;
+  *)
+    cat >&2 <<EOF
+infer — headless prompt responder over logos-delivery (local Ollama backend)
+
+usage:
+  infer start            listen for prompts and answer them (blocks)
+  infer ask "<prompt>"   send a prompt to a running responder, print the answer
+  infer stop             stop the module + daemon
+
+See part8-inference/README.md for build/install and the two-terminal demo.
+EOF
+    exit 2 ;;
+esac

@@ -1,0 +1,23 @@
+{
+  "name": "inference",
+  "version": "0.1.0",
+  "type": "core",
+  "category": "example",
+  "description": "Headless prompt responder over logos-delivery — listens for prompts, queues them for a local model, publishes answers back",
+  "main": "inference_plugin",
+  "dependencies": ["delivery_module"],
+
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}
