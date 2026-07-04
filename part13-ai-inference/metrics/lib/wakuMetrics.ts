@@ -23,7 +23,7 @@ const BOOTSTRAP = [
   "/dns4/delivery-01.ac-cn-hongkong-c.logos.dev.status.im/tcp/30303/p2p/16Uiu2HAm8YokiNun9BkeA1ZRmhLbtNUvcwRr64F69tYj9fkGyuEP",
 ];
 
-const LIVE_WINDOW_MS = 30_000;   // provider counts as active (3+ missed announces = stale)
+const LIVE_WINDOW_MS = 90_000;   // ~3 missed announces (providers announce every ~30s, jittered)
 const FORGET_MS = 15 * 60_000;   // drop from the table entirely after 15 min silent
 
 export interface ProviderCard {

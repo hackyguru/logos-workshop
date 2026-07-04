@@ -22,6 +22,10 @@ static const QString TOPIC_SUFFIX = "/json";
 // we browse them and reach any provider on its own session topic — no shared
 // room required.
 static const QString DISCOVERY_TOPIC = "/inference/1/discovery/json";
+// A provider is live until ~3 missed announces (providers announce every ~30s
+// jittered; load changes announce immediately, so this only bounds how long a
+// silently-dead provider can linger in the roster).
+static const qint64 PROVIDER_LIVE_MS = 90000;
 
 InferencePlugin::InferencePlugin(QObject* parent)
     : QObject(parent)
@@ -291,7 +295,7 @@ QString InferencePlugin::room() { return m_room; }
 const ProviderRec* InferencePlugin::pickProvider(QString& fpOut,
                                                  const QStringList& exclude) const
 {
-    const qint64 cutoff = nowMs() - 30000;
+    const qint64 cutoff = nowMs() - PROVIDER_LIVE_MS;
 
     // Marketplace filter: a provider qualifies only if it serves the requested
     // model (exact name match; "" = anything goes).
@@ -728,7 +732,7 @@ QString InferencePlugin::listProviders()
         o["origin"] = it->origin;
         o["price"]  = it->price.isEmpty() ? "free" : it->price;
         o["ageMs"]  = static_cast<double>(now - it->lastSeenMs);
-        o["live"]   = (now - it->lastSeenMs) < 30000;
+        o["live"]   = (now - it->lastSeenMs) < PROVIDER_LIVE_MS;
         arr.append(o);
     }
     return QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact));

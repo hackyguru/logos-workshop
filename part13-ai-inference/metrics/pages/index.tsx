@@ -182,7 +182,7 @@ export default function Home() {
             </div>
           ) : (
             <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
-              none heard yet — providers announce every 10s
+              none heard yet — providers announce every ~30s
             </p>
           )}
         </section>
@@ -229,7 +229,7 @@ export default function Home() {
             </table>
           </div>
           <p style={{ color: "var(--text-muted)", fontSize: 11 }} className="mt-2">
-            a provider is <b>live</b> if a signed capability card arrived in the last 30s ·
+            a provider is <b>live</b> if a signed capability card arrived in the last 90s ·
             cards verified against Ed25519 identity (fingerprint = SHA-256 of signing key)
           </p>
         </section>

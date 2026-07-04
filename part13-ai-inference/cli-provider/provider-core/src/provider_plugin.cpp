@@ -11,6 +11,7 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QProcess>
+#include <QRandomGenerator>
 #include <QTimer>
 #include <QUuid>
 
@@ -218,18 +219,38 @@ bool ProviderPlugin::start(const QString& room)
 
     // Announce this provider (fingerprint + keys + model + load) so users can
     // build a verified roster and seal prompts to our box key. Re-announced
-    // every 10s; users expire entries they haven't heard from in ~30s.
+    // every ~30s with jitter (announce traffic is the network's per-node fixed
+    // cost — at N providers everyone carries N cards/interval, so the interval
+    // is the scale knob; jitter stops fleet-wide announce synchronization).
+    // Load *changes* still announce immediately (capacity edges below), so
+    // routing stays fresh. Users expire entries after ~3 missed announces.
     if (!m_announceTimer) {
         m_announceTimer = new QTimer(this);
-        connect(m_announceTimer, &QTimer::timeout, this, &ProviderPlugin::sendAnnounce);
+        m_announceTimer->setSingleShot(true);
+        connect(m_announceTimer, &QTimer::timeout, this, [this]() {
+            sendAnnounce();
+            scheduleAnnounce();
+        });
     }
-    m_announceTimer->start(10000);
+    scheduleAnnounce();
     sendAnnounce();
 
     qDebug() << "ProviderPlugin:" << m_id << "listening on" << topicForRoom(m_room)
              << "model" << m_model;
     emit eventResponse("listening", QVariantList{ m_room, m_id, m_model });
     return true;
+}
+
+// Base interval ±20% jitter. INFERENCE_ANNOUNCE_MS overrides the base (handy
+// for demos where 30s feels slow).
+void ProviderPlugin::scheduleAnnounce()
+{
+    if (!m_announceTimer) return;
+    int base = qEnvironmentVariableIntValue("INFERENCE_ANNOUNCE_MS");
+    if (base <= 0) base = 30000;
+    const int jitter = base / 5;   // ±20%
+    m_announceTimer->start(base - jitter
+                           + QRandomGenerator::global()->bounded(2 * jitter));
 }
 
 void ProviderPlugin::sendAnnounce()

@@ -43,6 +43,7 @@ signals:
 
 private:
     void    ensureIdentity();
+    void    scheduleAnnounce();
     void    sendAnnounce();
     void    sendCard(const QString& signPk, const QString& boxPk, int load);
     QString topicForRoom(const QString& room) const;

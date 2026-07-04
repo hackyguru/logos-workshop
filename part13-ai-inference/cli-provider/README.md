@@ -71,7 +71,8 @@ Inside the module, each prompt becomes:
 
 ## Marketplace discovery
 
-Beyond the room, the provider announces a **signed capability card** every 10s
+Beyond the room, the provider announces a **signed capability card** every ~30s
+(jittered — `INFERENCE_ANNOUNCE_MS` overrides; load changes announce immediately)
 on the global discovery topic `/inference/1/discovery/json` — models served,
 load/capacity, and a price scheme (`free` until LEZ payments land) — and takes
 prompts directly on its **session topic** `/inference/1/p-<fingerprint>/json`.

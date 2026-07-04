@@ -34,7 +34,8 @@ the architecture is identical (see [part11-core-ping-pong](../part11-core-ping-p
   - *Room* (legacy/local): the shared topic `/inference/1/<room>/json` — both
     sides pick the same room and meet there, part11-style.
   - *Marketplace* (discovery): providers publish **signed capability cards**
-    (models served, load/capacity, price scheme) every 10s on the well-known
+    (models served, load/capacity, price scheme) every ~30s (jittered; load
+    changes announce immediately) on the well-known
     topic `/inference/1/discovery/json`, and take prompts on their **own
     session topic** `/inference/1/p-<fingerprint>/json`. Users browse the
     global roster and reach any provider anywhere — no shared room needed.
