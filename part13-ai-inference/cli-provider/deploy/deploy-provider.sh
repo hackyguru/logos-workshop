@@ -22,6 +22,8 @@ CLI_DIR="$(dirname "$HERE")"   # …/cli-provider
 
 ROOM="${ROOM:-lobby}"
 INFERENCE_MODEL="${INFERENCE_MODEL:-tinyllama}"
+# Marketplace capability card: all models served (csv, first = default).
+INFERENCE_MODELS="${INFERENCE_MODELS:-$INFERENCE_MODEL}"
 INFERENCE_TCPPORT="${INFERENCE_TCPPORT:-60010}"
 # pre-release-679a9af — the generation verified working with inference-provider.sh
 LOGOSCORE_REV="${LOGOSCORE_REV:-679a9af8fd0064c2997c2ea3ed1fa53b422bfe0d}"
@@ -64,6 +66,7 @@ rsync -az --delete \
 # ── build + install on the VM ────────────────────────────────────────────────
 log "building logoscore CLI + modules on the VM (first run is long)…"
 "${SSH[@]}" ROOM="$ROOM" INFERENCE_MODEL="$INFERENCE_MODEL" \
+            INFERENCE_MODELS="$INFERENCE_MODELS" \
             INFERENCE_TCPPORT="$INFERENCE_TCPPORT" LOGOSCORE_REV="$LOGOSCORE_REV" \
             'bash -s' <<'REMOTE'
 set -euo pipefail
@@ -93,6 +96,7 @@ WorkingDirectory=/home/ubuntu/cli-provider
 Environment=LOGOSCORE=/home/ubuntu/.logoscore-cli/bin/logoscore
 Environment=ROOM=$ROOM
 Environment=INFERENCE_MODEL=$INFERENCE_MODEL
+Environment=INFERENCE_MODELS=$INFERENCE_MODELS
 Environment=INFERENCE_TCPPORT=$INFERENCE_TCPPORT
 Environment=OLLAMA_URL=http://127.0.0.1:11434
 Environment=DAEMON_LOG=/home/ubuntu/logoscore-inference.log

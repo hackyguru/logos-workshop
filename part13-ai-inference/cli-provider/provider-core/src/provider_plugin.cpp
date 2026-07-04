@@ -476,6 +476,12 @@ void ProviderPlugin::runInference(const QString& id, const QString& replyPkB64,
     req["model"]  = model;
     req["prompt"] = prompt;
     req["stream"] = false;
+    // Thinking-mode models default to a long <think> preamble — minutes of
+    // extra CPU tokens per answer on this class of hardware, easily blowing
+    // the user's 90s retry window. Disable it (chat-sized answers don't need
+    // it). Gated by family: ollama rejects think=false on non-thinking models.
+    if (model.startsWith("qwen3") || model.startsWith("deepseek-r1"))
+        req["think"] = false;
     const QByteArray body = QJsonDocument(req).toJson(QJsonDocument::Compact);
     const QString url = m_ollamaUrl + "/api/generate";
 

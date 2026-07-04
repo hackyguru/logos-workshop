@@ -92,6 +92,55 @@ Item {
         return fp.substring(0, 10) + "…"
     }
 
+    // Every distinct model advertised by a live provider — feeds the model picker.
+    function distinctModels() {
+        var out = []
+        for (var i = 0; i < providers.length; i++) {
+            if (!providers[i].live) continue
+            var ms = (providers[i].models && providers[i].models.length > 0)
+                     ? providers[i].models : [providers[i].model]
+            for (var j = 0; j < ms.length; j++)
+                if (ms[j] && out.indexOf(ms[j]) === -1) out.push(ms[j])
+        }
+        out.sort()
+        return out
+    }
+
+    function providerServes(p, m) {
+        if (!m || m.length === 0) return true
+        var ms = (p.models && p.models.length > 0) ? p.models : [p.model]
+        return ms.indexOf(m) !== -1
+    }
+
+    function findProvider(fp) {
+        for (var i = 0; i < providers.length; i++)
+            if (providers[i].id === fp) return providers[i]
+        return null
+    }
+
+    // Providers a prompt could go to right now (live + serving the model filter).
+    function eligibleProviders() {
+        var n = 0
+        for (var i = 0; i < providers.length; i++)
+            if (providers[i].live && providerServes(providers[i], modelFilter)) n++
+        return n
+    }
+
+    // One plain sentence: where will my next prompt go?
+    function routingSummary() {
+        if (preferredProvider.length > 0) {
+            var p = findProvider(preferredProvider)
+            return "Prompts go to 📌 " + preferredProvider.substring(0, 10) + "…"
+                   + (modelFilter ? " running " + modelFilter : (p ? " (" + (p.model || "?") + ")" : ""))
+        }
+        var n = eligibleProviders()
+        if (n === 0) return modelFilter
+            ? "⚠ no live provider serves " + modelFilter + " — prompts will wait/fail"
+            : "⚠ no live providers yet — listening for capability cards…"
+        return "Auto: least-loaded of " + n + " provider(s)"
+               + (modelFilter ? " serving " + modelFilter : "")
+    }
+
     function unlockIdentity() {
         const ok = unwrapRemote(callInf("unlock", [unlockField.text]), false)
         if (ok === true) unlockField.text = ""
@@ -308,74 +357,109 @@ Item {
             }
         }
 
-        // Provider picker + encryption policy (n→n routing controls)
+        // Routing controls: pick a model (from what the marketplace actually
+        // offers), pick a provider (only ones serving that model), and see in
+        // one sentence where the next prompt will go.
         Rectangle {
             visible: identityInit
             Layout.fillWidth: true
-            Layout.preferredHeight: 52
+            Layout.preferredHeight: 78
             color: "#f8f9fa"
             border.color: "#dfe3e8"; border.width: 1; radius: 8
-            RowLayout {
+            ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: 10
-                spacing: 8
-                Text { text: "Provider"; color: "#555"; font.pixelSize: 13 }
-                ComboBox {
-                    id: providerBox
+                spacing: 6
+                RowLayout {
                     Layout.fillWidth: true
-                    font.pixelSize: 12
-                    // First entry = auto; the rest are live roster fingerprints.
-                    model: {
-                        var m = [{ text: "Auto (least loaded)", fp: "" }]
-                        for (var i = 0; i < providers.length; i++)
-                            if (providers[i].live)
-                                m.push({ text: providerLabel(providers[i].id),
-                                         fp: providers[i].id })
-                        return m
+                    spacing: 8
+                    Text { text: "Model"; color: "#555"; font.pixelSize: 13 }
+                    ComboBox {
+                        id: modelBox
+                        Layout.preferredWidth: 170
+                        font.pixelSize: 12
+                        // Union of every model advertised by live providers —
+                        // no typing, no guessing names.
+                        model: {
+                            var m = [{ text: "Any model", val: "" }]
+                            var ds = distinctModels()
+                            for (var i = 0; i < ds.length; i++)
+                                m.push({ text: ds[i], val: ds[i] })
+                            return m
+                        }
+                        textRole: "text"
+                        currentIndex: {
+                            for (var i = 0; i < model.length; i++)
+                                if (model[i].val === modelFilter) return i
+                            return 0
+                        }
+                        onActivated: {
+                            var v = model[currentIndex].val || ""
+                            callInf("setModelFilter", [v])
+                            // A pinned provider that can't serve the new model
+                            // would silently never be picked — unpin instead.
+                            var p = findProvider(preferredProvider)
+                            if (p && !providerServes(p, v))
+                                callInf("setPreferredProvider", [""])
+                            refreshIdentity()
+                        }
                     }
-                    textRole: "text"
-                    // Bind the shown selection to the backend's actual choice, so
-                    // the 1s poll (which rebuilds `model`) can't reset it to Auto.
-                    // Re-evaluates when model or preferredProvider changes.
-                    currentIndex: {
-                        for (var i = 0; i < model.length; i++)
-                            if (model[i].fp === preferredProvider) return i
-                        return 0   // preferred not live → show Auto
+                    Text { text: "Provider"; color: "#555"; font.pixelSize: 13 }
+                    ComboBox {
+                        id: providerBox
+                        Layout.fillWidth: true
+                        font.pixelSize: 12
+                        // Auto + only live providers that serve the chosen model.
+                        model: {
+                            var m = [{ text: "Auto — least loaded", fp: "" }]
+                            for (var i = 0; i < providers.length; i++)
+                                if (providers[i].live
+                                    && providerServes(providers[i], modelFilter))
+                                    m.push({ text: providerLabel(providers[i].id),
+                                             fp: providers[i].id })
+                            return m
+                        }
+                        textRole: "text"
+                        // Bind the shown selection to the backend's actual choice, so
+                        // the 1s poll (which rebuilds `model`) can't reset it to Auto.
+                        currentIndex: {
+                            for (var i = 0; i < model.length; i++)
+                                if (model[i].fp === preferredProvider) return i
+                            return 0   // preferred not live → show Auto
+                        }
+                        onActivated: {
+                            callInf("setPreferredProvider", [model[currentIndex].fp || ""])
+                            refreshIdentity()
+                        }
                     }
-                    onActivated: {
-                        callInf("setPreferredProvider", [model[currentIndex].fp || ""])
-                        refreshIdentity()
+                    CheckBox {
+                        text: "Require 🔒"
+                        checked: requireEncryption
+                        font.pixelSize: 12
+                        onToggled: {
+                            callInf("setRequireEncryption", [checked])
+                            refreshIdentity()
+                        }
                     }
                 }
-                TextField {
-                    id: modelFilterField
-                    Layout.preferredWidth: 120
-                    placeholderText: "any model"
-                    text: modelFilter
-                    font.pixelSize: 12
-                    onEditingFinished: {
-                        callInf("setModelFilter", [text.trim()])
-                        refreshIdentity()
-                    }
-                }
-                CheckBox {
-                    text: "Require 🔒"
-                    checked: requireEncryption
-                    font.pixelSize: 12
-                    onToggled: {
-                        callInf("setRequireEncryption", [checked])
-                        refreshIdentity()
-                    }
+                Text {
+                    Layout.fillWidth: true
+                    text: routingSummary()
+                    color: text.indexOf("⚠") === 0 ? "#b26a00" : "#188038"
+                    font.pixelSize: 11
+                    elide: Text.ElideRight
                 }
             }
         }
 
         // Marketplace: every provider heard on the global discovery topic (🌐)
-        // or in this room (🚪). Click a row to pin prompts to that provider.
+        // or in this room (🚪). Click a row to pin prompts to that provider;
+        // click it again to go back to Auto. Rows that don't serve the chosen
+        // model are dimmed and unclickable.
         Rectangle {
             visible: identityInit && providers.length > 0
             Layout.fillWidth: true
-            Layout.preferredHeight: Math.min(30 + providers.length * 30, 130)
+            Layout.preferredHeight: Math.min(34 + providers.length * 30, 140)
             color: "#f8f9fa"
             border.color: "#dfe3e8"; border.width: 1; radius: 8
 
@@ -384,9 +468,18 @@ Item {
                 anchors.margins: 10
                 spacing: 4
 
-                Text {
-                    text: "Marketplace — " + liveProviders() + " live provider(s)"
-                    color: "#555"; font.pixelSize: 12; font.weight: Font.DemiBold
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text {
+                        text: "Marketplace — " + liveProviders() + " live provider(s)"
+                        color: "#555"; font.pixelSize: 12; font.weight: Font.DemiBold
+                        Layout.fillWidth: true
+                    }
+                    Text {
+                        text: preferredProvider.length > 0
+                              ? "click 📌 row to unpin" : "click a row to pin"
+                        color: "#9aa5b1"; font.pixelSize: 10
+                    }
                 }
                 ListView {
                     Layout.fillWidth: true
@@ -394,18 +487,25 @@ Item {
                     clip: true
                     model: providers
                     delegate: Rectangle {
+                        property bool pinned: modelData.id === preferredProvider
+                        property bool eligible: modelData.live
+                                                && providerServes(modelData, modelFilter)
                         width: ListView.view.width
                         height: 28
                         radius: 4
-                        color: modelData.id === preferredProvider ? "#e8f0fe"
-                               : (pRow.containsMouse ? "#f1f3f4" : "transparent")
+                        opacity: eligible ? 1.0 : 0.4
+                        color: pinned ? "#e8f0fe"
+                               : (pRow.containsMouse && eligible ? "#f1f3f4" : "transparent")
+                        border.color: pinned ? "#a9c7f0" : "transparent"
+                        border.width: pinned ? 1 : 0
 
                         RowLayout {
                             anchors.fill: parent
                             anchors.leftMargin: 6; anchors.rightMargin: 6
                             spacing: 8
                             Text {
-                                text: (modelData.origin === "discovery" ? "🌐" : "🚪")
+                                text: (pinned ? "📌 " : "")
+                                      + (modelData.origin === "discovery" ? "🌐" : "🚪")
                                       + (modelData.live ? "" : " 💤")
                                 font.pixelSize: 12
                             }
@@ -417,27 +517,37 @@ Item {
                             Text {
                                 Layout.fillWidth: true
                                 text: providerModels(modelData)
+                                      + (!modelData.live ? "  (last heard "
+                                         + Math.floor(modelData.ageMs / 1000) + "s ago)"
+                                         : (!eligible ? "  (no " + modelFilter + ")" : ""))
                                 font.pixelSize: 12; color: "#555"
                                 elide: Text.ElideRight
                             }
+                            // Free/busy at a glance instead of a bare number.
                             Text {
-                                text: "load " + modelData.load
-                                      + (modelData.cap > 0 ? "/" + modelData.cap : "")
-                                font.pixelSize: 11; color: "#888"
+                                text: modelData.cap > 0
+                                      ? (modelData.load >= modelData.cap
+                                         ? "⛔ full"
+                                         : "● " + (modelData.cap - modelData.load) + " free")
+                                      : "load " + modelData.load
+                                font.pixelSize: 11
+                                color: modelData.cap > 0 && modelData.load >= modelData.cap
+                                       ? "#c5221f" : "#188038"
                             }
                             Text {
                                 text: modelData.price || "free"
-                                font.pixelSize: 11; color: "#188038"
+                                font.pixelSize: 11; color: "#888"
                             }
                         }
                         MouseArea {
                             id: pRow
                             anchors.fill: parent
                             hoverEnabled: true
-                            cursorShape: Qt.PointingHandCursor
+                            enabled: eligible
+                            cursorShape: eligible ? Qt.PointingHandCursor : Qt.ArrowCursor
                             onClicked: {
-                                // Click toggles: pin this provider, or unpin back to auto.
-                                const fp = modelData.id === preferredProvider ? "" : modelData.id
+                                // Toggle: pin this provider ⟷ back to Auto.
+                                const fp = pinned ? "" : modelData.id
                                 callInf("setPreferredProvider", [fp])
                                 refreshIdentity()
                             }
