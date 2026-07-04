@@ -6,6 +6,7 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QElapsedTimer>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -16,6 +17,9 @@
 // Must match the inference user (part13 inference-core / inference-ui).
 static const QString TOPIC_PREFIX = "/inference/1/";
 static const QString TOPIC_SUFFIX = "/json";
+// Marketplace discovery: a single well-known topic every provider announces
+// capability cards on, and every user browses — no shared room needed.
+static const QString DISCOVERY_TOPIC = "/inference/1/discovery/json";
 
 ProviderPlugin::ProviderPlugin(QObject* parent)
     : QObject(parent)
@@ -23,6 +27,14 @@ ProviderPlugin::ProviderPlugin(QObject* parent)
     , m_model(qEnvironmentVariable("INFERENCE_MODEL", "tinyllama"))
     , m_ollamaUrl(qEnvironmentVariable("OLLAMA_URL", "http://localhost:11434"))
 {
+    // Marketplace capability card: every model this node serves. INFERENCE_MODELS
+    // (comma-separated) wins; else the single INFERENCE_MODEL. The first entry
+    // is the default when a prompt doesn't request a specific model.
+    const QString multi = qEnvironmentVariable("INFERENCE_MODELS");
+    for (const QString& m : multi.split(',', Qt::SkipEmptyParts))
+        m_models << m.trimmed();
+    if (m_models.isEmpty()) m_models << m_model;
+    m_model = m_models.first();
     // Cap concurrent inferences. ollama serializes per model anyway, so beyond
     // a small number extra prompts just queue and blow past the user's timeout;
     // better to decline them so they fail over to a less-busy provider. 0/unset
@@ -192,6 +204,18 @@ bool ProviderPlugin::start(const QString& room)
 
     if (!invokeBool("subscribe", "subscribe", topicForRoom(m_room))) return false;
 
+    // Marketplace: also serve on our own session topic (any user who discovers
+    // us can seal prompts straight to it — no shared room required), and
+    // announce capability cards on the global discovery topic.
+    if (m_identity && m_identity->isInitialized()) {
+        if (!invokeBool("subscribe session", "subscribe", sessionTopic()))
+            qWarning() << "ProviderPlugin: session topic subscribe failed —"
+                       << "reachable via room only";
+        if (!invokeBool("subscribe discovery", "subscribe", DISCOVERY_TOPIC))
+            qWarning() << "ProviderPlugin: discovery subscribe failed —"
+                       << "cards may not propagate";
+    }
+
     // Announce this provider (fingerprint + keys + model + load) so users can
     // build a verified roster and seal prompts to our box key. Re-announced
     // every 10s; users expire entries they haven't heard from in ~30s.
@@ -236,6 +260,55 @@ void ProviderPlugin::sendAnnounce()
     m_deliveryClient->invokeRemoteMethod(
         "delivery_module", "send", topicForRoom(m_room),
         QString::fromUtf8(QJsonDocument(a).toJson(QJsonDocument::Compact)));
+
+    // v3 capability card on the global discovery topic. Same identity, richer
+    // payload: every model served, capacity alongside load, and a price object.
+    // `price` is the economics seam — {"scheme":"free"} today; when LEZ private
+    // payments land, the scheme/terms change here and the signed canon already
+    // covers them (no protocol bump needed).
+    //
+    // Deferred by 500ms rather than sent back-to-back with the v2 announce:
+    // two immediate sends into delivery_module have crashed the daemon in the
+    // wild (segfault in the send path — upstream issue; single sends are fine).
+    const int inflightNow = m_inflight;
+    QTimer::singleShot(500, this, [this, signPk, boxPk, inflightNow]() {
+        if (!m_started || !m_deliveryClient) return;
+        if (!m_identity || !m_identity->isInitialized()) return;
+        sendCard(signPk, boxPk, inflightNow);
+    });
+}
+
+void ProviderPlugin::sendCard(const QString& signPk, const QString& boxPk, int load)
+{
+    const qint64 ts = QDateTime::currentMSecsSinceEpoch();
+    QJsonObject price;
+    price["scheme"] = "free";
+    const QString priceJson = QString::fromUtf8(
+        QJsonDocument(price).toJson(QJsonDocument::Compact));
+    const QString modelsCsv = m_models.join(',');
+
+    const QByteArray canon3 =
+        QString("inference/v1/announce3|%1|%2|%3|%4|%5|%6|%7|%8")
+            .arg(m_id, signPk, boxPk, modelsCsv,
+                 QString::number(load), QString::number(m_maxInflight),
+                 priceJson, QString::number(ts)).toUtf8();
+
+    QJsonObject card;
+    card["v"]      = 3;
+    card["type"]   = "announce";
+    card["id"]     = m_id;
+    card["signPk"] = signPk;
+    card["boxPk"]  = boxPk;
+    card["models"] = QJsonArray::fromStringList(m_models);
+    card["load"]   = load;
+    card["cap"]    = m_maxInflight;
+    card["price"]  = price;
+    card["ts"]     = ts;
+    card["sig"]    = QString::fromLatin1(m_identity->sign(canon3).toBase64());
+
+    m_deliveryClient->invokeRemoteMethod(
+        "delivery_module", "send", DISCOVERY_TOPIC,
+        QString::fromUtf8(QJsonDocument(card).toJson(QJsonDocument::Compact)));
 }
 
 bool ProviderPlugin::stop()
@@ -244,6 +317,10 @@ bool ProviderPlugin::stop()
     if (m_announceTimer) m_announceTimer->stop();
     if (m_deliveryClient) {
         invokeBool("unsubscribe", "unsubscribe", topicForRoom(m_room));
+        if (m_identity && m_identity->isInitialized()) {
+            invokeBool("unsubscribe session", "unsubscribe", sessionTopic());
+            invokeBool("unsubscribe discovery", "unsubscribe", DISCOVERY_TOPIC);
+        }
         invokeBool("stop", "stop");
     }
     m_deliveryObject = nullptr;
@@ -258,6 +335,8 @@ QString ProviderPlugin::stats()
     o["room"]          = m_room;
     o["listening"]     = m_started;
     o["model"]         = m_model;
+    o["models"]        = QJsonArray::fromStringList(m_models);
+    o["sessionTopic"]  = sessionTopic();
     o["promptsSeen"]   = m_promptsSeen;
     o["responsesSent"] = m_responsesSent;
     o["inflight"]      = m_inflight;
@@ -273,13 +352,24 @@ QString ProviderPlugin::topicForRoom(const QString& room) const
     return TOPIC_PREFIX + room + TOPIC_SUFFIX;
 }
 
+// Where this provider takes direct (marketplace) prompts: a topic derived from
+// its own fingerprint, so discovery-roster users can reach it with no shared
+// room. Responses go back on the same topic.
+QString ProviderPlugin::sessionTopic() const
+{
+    return TOPIC_PREFIX + "p-" + m_id + TOPIC_SUFFIX;
+}
+
 void ProviderPlugin::handleMessageReceived(const QVariantList& data)
 {
     // delivery_module.messageReceived: [hash, contentTopic, payload_base64, ts_ns]
     if (data.size() < 3) return;
 
     const QString topic = data[1].toString();
-    if (topic != topicForRoom(m_room)) return;
+    // Prompts arrive on the shared room topic (legacy) or on our own session
+    // topic (marketplace users who found us via discovery).
+    const bool onSession = (topic == sessionTopic());
+    if (topic != topicForRoom(m_room) && !onSession) return;
 
     const QByteArray payload =
         QByteArray::fromBase64(data[2].toString().toUtf8());
@@ -297,6 +387,7 @@ void ProviderPlugin::handleMessageReceived(const QVariantList& data)
     QString prompt;         // what we feed the model
     QString replyPkB64;     // v2: seal the response to this ephemeral key
     QString fromLabel;      // for stats/logs only
+    QString reqModel;       // v3 marketplace prompts may request a model
 
     if (obj.value("v").toInt() >= 2) {
         // v2 sealed prompt: only for us, and only readable by us.
@@ -317,6 +408,14 @@ void ProviderPlugin::handleMessageReceived(const QVariantList& data)
         replyPkB64 = innerDoc.object().value("replyPk").toString();
         if (replyPkB64.isEmpty()) return;   // no way to answer privately
         fromLabel  = "sealed:" + replyPkB64.left(8);
+        // Honour a requested model only if we actually serve it; otherwise the
+        // default keeps the old single-model behaviour.
+        reqModel = innerDoc.object().value("model").toString();
+        if (!reqModel.isEmpty() && !m_models.contains(reqModel)) {
+            qDebug() << "ProviderPlugin: prompt" << id << "requested model"
+                     << reqModel << "we don't serve — using" << m_model;
+            reqModel.clear();
+        }
     } else {
         // v1 plaintext prompt (legacy UIs) — answered in plaintext as before.
         prompt    = obj.value("prompt").toString();
@@ -360,19 +459,21 @@ void ProviderPlugin::handleMessageReceived(const QVariantList& data)
     // from inside its own event dispatch — delivery-guide gotcha #9). The actual
     // ollama call is async (QProcess), so it never blocks the event loop either.
     const QString topicCopy = topic;
-    QTimer::singleShot(0, this, [this, id, replyPkB64, prompt, topicCopy]() {
-        runInference(id, replyPkB64, prompt, topicCopy);
+    const QString modelCopy = reqModel.isEmpty() ? m_model : reqModel;
+    QTimer::singleShot(0, this, [this, id, replyPkB64, prompt, modelCopy, topicCopy]() {
+        runInference(id, replyPkB64, prompt, modelCopy, topicCopy);
     });
 }
 
 void ProviderPlugin::runInference(const QString& id, const QString& replyPkB64,
-                                  const QString& prompt, const QString& topic)
+                                  const QString& prompt, const QString& model,
+                                  const QString& topic)
 {
     // Ask ollama via its HTTP API (the server is already running on $OLLAMA_URL).
     // We shell out to curl rather than link Qt Network, and pass the request body
     // on stdin (curl -d @-) so the prompt needs no shell escaping.
     QJsonObject req;
-    req["model"]  = m_model;
+    req["model"]  = model;
     req["prompt"] = prompt;
     req["stream"] = false;
     const QByteArray body = QJsonDocument(req).toJson(QJsonDocument::Compact);
@@ -383,7 +484,7 @@ void ProviderPlugin::runInference(const QString& id, const QString& replyPkB64,
     timer->start();
 
     connect(proc, &QProcess::finished, this,
-        [this, proc, timer, id, replyPkB64, topic](int exitCode, QProcess::ExitStatus) {
+        [this, proc, timer, id, replyPkB64, model, topic](int exitCode, QProcess::ExitStatus) {
             const qint64 ms = timer->elapsed();
             delete timer;
             const QByteArray out = proc->readAllStandardOutput();
@@ -406,7 +507,7 @@ void ProviderPlugin::runInference(const QString& id, const QString& replyPkB64,
             }
             qDebug() << "ProviderPlugin: inference for" << id << "done in" << ms
                      << "ms," << text.size() << "chars";
-            sendResponse(id, replyPkB64, text.trimmed(), topic);
+            sendResponse(id, replyPkB64, text.trimmed(), model, topic);
         });
 
     // If curl can't even start (missing binary), QProcess emits errorOccurred
@@ -414,13 +515,14 @@ void ProviderPlugin::runInference(const QString& id, const QString& replyPkB64,
     // m_inflight would leak. Handle that one case explicitly. (Crashes after a
     // successful start still emit finished, so no double-send here.)
     connect(proc, &QProcess::errorOccurred, this,
-        [this, proc, timer, id, replyPkB64, topic](QProcess::ProcessError err) {
+        [this, proc, timer, id, replyPkB64, model, topic](QProcess::ProcessError err) {
             if (err != QProcess::FailedToStart) return;
             delete timer;
             proc->deleteLater();
             qWarning() << "ProviderPlugin: curl failed to start for" << id;
             sendResponse(id, replyPkB64,
-                         "[inference failed — curl not found on the provider]", topic);
+                         "[inference failed — curl not found on the provider]",
+                         model, topic);
         });
 
     // curl is at /usr/bin/curl on macOS / standard on Linux — on the base PATH.
@@ -430,7 +532,8 @@ void ProviderPlugin::runInference(const QString& id, const QString& replyPkB64,
 }
 
 void ProviderPlugin::sendResponse(const QString& id, const QString& replyPkB64,
-                                  const QString& text, const QString& topic)
+                                  const QString& text, const QString& model,
+                                  const QString& topic)
 {
     const bool wasFull = (m_inflight >= m_maxInflight);
     if (m_inflight > 0) --m_inflight;
@@ -449,7 +552,7 @@ void ProviderPlugin::sendResponse(const QString& id, const QString& replyPkB64,
         // asker can read it; the signature binds it to this provider.
         QJsonObject inner;
         inner["text"]  = text;
-        inner["model"] = m_model;
+        inner["model"] = model;
         const QByteArray sealed = InferenceIdentity::seal(
             QByteArray::fromBase64(replyPkB64.toLatin1()),
             QJsonDocument(inner).toJson(QJsonDocument::Compact));
@@ -468,7 +571,7 @@ void ProviderPlugin::sendResponse(const QString& id, const QString& replyPkB64,
         // v1 plaintext response (legacy prompt had no reply key).
         resp["type"]  = "response";
         resp["text"]  = text;
-        resp["model"] = m_model;
+        resp["model"] = model;
     }
 
     const QString payload = QString::fromUtf8(

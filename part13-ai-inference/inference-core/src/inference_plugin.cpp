@@ -18,6 +18,10 @@
 // The inference provider (logoscore CLI) subscribes to the exact same topic.
 static const QString TOPIC_PREFIX = "/inference/1/";
 static const QString TOPIC_SUFFIX = "/json";
+// Marketplace discovery: providers everywhere announce capability cards here;
+// we browse them and reach any provider on its own session topic — no shared
+// room required.
+static const QString DISCOVERY_TOPIC = "/inference/1/discovery/json";
 
 InferencePlugin::InferencePlugin(QObject* parent)
     : QObject(parent)
@@ -60,6 +64,7 @@ QString InferencePlugin::identityStatus()
     // Session prompt-routing settings (piggybacked so the UI needs one poll).
     o["requireEncryption"] = m_requireEncryption;
     o["preferredProvider"] = m_preferredProvider;
+    o["modelFilter"]       = m_modelFilter;
     return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
 }
 
@@ -83,6 +88,14 @@ bool InferencePlugin::setPreferredProvider(const QString& fingerprint)
     m_preferredProvider = fingerprint.trimmed();
     qDebug() << "InferencePlugin: preferredProvider ="
              << (m_preferredProvider.isEmpty() ? "(auto)" : m_preferredProvider);
+    return true;
+}
+
+bool InferencePlugin::setModelFilter(const QString& model)
+{
+    m_modelFilter = model.trimmed();
+    qDebug() << "InferencePlugin: modelFilter ="
+             << (m_modelFilter.isEmpty() ? "(any)" : m_modelFilter);
     return true;
 }
 
@@ -185,6 +198,12 @@ bool InferencePlugin::startDelivery()
         qDebug() << "InferencePlugin: subscribed to" << topicForRoom(m_room);
     }
 
+    // Marketplace: listen for capability cards from providers everywhere.
+    // Soft-fail — the room flow still works without discovery.
+    if (!invokeBool("subscribe discovery", "subscribe", DISCOVERY_TOPIC))
+        qWarning() << "InferencePlugin: discovery subscribe failed —"
+                   << "roster limited to this room";
+
     // Optimistically flip to "connected (locally up)" — the real
     // connectionStateChanged can take a while (and is flaky on logos.dev's
     // bootstrap). Same rationale as part3-polling / part11.
@@ -208,8 +227,13 @@ bool InferencePlugin::stopDelivery()
             m_deliveryClient->invokeRemoteMethod(
                 "delivery_module", "unsubscribe", topicForRoom(m_room));
         }
+        m_deliveryClient->invokeRemoteMethod(
+            "delivery_module", "unsubscribe", DISCOVERY_TOPIC);
+        for (const QString& t : m_sessionSubs)
+            m_deliveryClient->invokeRemoteMethod("delivery_module", "unsubscribe", t);
         invokeBool("stop", "stop");
     }
+    m_sessionSubs.clear();
 
     m_deliveryObject = nullptr;
     m_started        = false;
@@ -238,13 +262,16 @@ bool InferencePlugin::joinRoom(const QString& room)
         }
     }
     m_room = clean;
-    // The roster is per-room: announces heard in the old room's topic don't
-    // apply here, and sealing a prompt to one of them would send it to a
-    // provider not subscribed to this topic. Rebuild from fresh announces.
-    if (!m_providers.isEmpty()) {
-        m_providers.clear();
-        emit eventResponse("providersChanged", QVariantList{ 0 });
+    // Room-scoped roster entries don't carry over: an old room's provider is
+    // not subscribed to the new room's topic. Marketplace (discovery) entries
+    // are global — they have their own session topics — so they stay.
+    bool removed = false;
+    for (auto it = m_providers.begin(); it != m_providers.end();) {
+        if (it->origin == "room") { it = m_providers.erase(it); removed = true; }
+        else ++it;
     }
+    if (removed)
+        emit eventResponse("providersChanged", QVariantList{ m_providers.size() });
     qDebug() << "InferencePlugin: joined room" << m_room << "topic" << topicForRoom(m_room);
     emit eventResponse("roomChanged", QVariantList{ m_room });
     return true;
@@ -266,9 +293,16 @@ const ProviderRec* InferencePlugin::pickProvider(QString& fpOut,
 {
     const qint64 cutoff = nowMs() - 30000;
 
+    // Marketplace filter: a provider qualifies only if it serves the requested
+    // model (exact name match; "" = anything goes).
+    const auto servesFilter = [this](const ProviderRec& p) {
+        return m_modelFilter.isEmpty() || p.models.contains(m_modelFilter);
+    };
+
     if (!m_preferredProvider.isEmpty() && !exclude.contains(m_preferredProvider)) {
         const auto it = m_providers.constFind(m_preferredProvider);
-        if (it != m_providers.constEnd() && it->lastSeenMs >= cutoff) {
+        if (it != m_providers.constEnd() && it->lastSeenMs >= cutoff
+            && servesFilter(it.value())) {
             fpOut = it.key();
             return &it.value();
         }
@@ -278,7 +312,7 @@ const ProviderRec* InferencePlugin::pickProvider(QString& fpOut,
     int minLoad = INT_MAX;
     for (auto it = m_providers.constBegin(); it != m_providers.constEnd(); ++it) {
         const ProviderRec& p = it.value();
-        if (p.lastSeenMs < cutoff || exclude.contains(it.key())) continue;
+        if (p.lastSeenMs < cutoff || exclude.contains(it.key()) || !servesFilter(p)) continue;
         if (p.load < minLoad) minLoad = p.load;
     }
     if (minLoad == INT_MAX) return nullptr;   // none available
@@ -287,7 +321,7 @@ const ProviderRec* InferencePlugin::pickProvider(QString& fpOut,
     QStringList tied;
     for (auto it = m_providers.constBegin(); it != m_providers.constEnd(); ++it) {
         const ProviderRec& p = it.value();
-        if (p.lastSeenMs < cutoff || exclude.contains(it.key())) continue;
+        if (p.lastSeenMs < cutoff || exclude.contains(it.key()) || !servesFilter(p)) continue;
         if (p.load == minLoad) tied << it.key();
     }
     fpOut = tied.at(QRandomGenerator::global()->bounded(tied.size()));
@@ -304,6 +338,7 @@ bool InferencePlugin::dispatchPrompt(PromptRec& rec)
     obj["id"]   = rec.id;
 
     rec.sealed = false;
+    QString sendTopic = topicForRoom(m_room);   // plaintext fallback stays in-room
     QString providerFp;
     const ProviderRec* prov = pickProvider(providerFp, rec.tried);
     QByteArray ephSk, ephPk;
@@ -311,6 +346,10 @@ bool InferencePlugin::dispatchPrompt(PromptRec& rec)
         QJsonObject inner;
         inner["prompt"]  = rec.prompt;
         inner["replyPk"] = QString::fromLatin1(ephPk.toBase64());
+        // Multi-model marketplace providers run whichever model we ask for;
+        // only request one when the user filtered (the provider's default
+        // otherwise). Rides inside the sealed box — the request stays private.
+        if (!m_modelFilter.isEmpty()) inner["model"] = m_modelFilter;
         const QByteArray sealed = InferenceIdentity::seal(
             prov->boxPk, QJsonDocument(inner).toJson(QJsonDocument::Compact));
         if (!sealed.isEmpty()) {
@@ -321,6 +360,13 @@ bool InferencePlugin::dispatchPrompt(PromptRec& rec)
             obj["v"]   = 2;
             obj["to"]  = providerFp;
             obj["box"] = QString::fromLatin1(sealed.toBase64());
+            // Marketplace providers are reached on their own session topic —
+            // join it first so their response (sent on the same topic) is heard.
+            sendTopic = prov->topic.isEmpty() ? sendTopic : prov->topic;
+            if (sendTopic != topicForRoom(m_room) && !m_sessionSubs.contains(sendTopic)) {
+                if (invokeBool("subscribe session", "subscribe", sendTopic))
+                    m_sessionSubs.insert(sendTopic);
+            }
         }
     }
     if (!rec.sealed) {
@@ -337,12 +383,13 @@ bool InferencePlugin::dispatchPrompt(PromptRec& rec)
     const QString payload = QString::fromUtf8(
         QJsonDocument(obj).toJson(QJsonDocument::Compact));
     const QVariant r = m_deliveryClient->invokeRemoteMethod(
-        "delivery_module", "send", topicForRoom(m_room), payload);
+        "delivery_module", "send", sendTopic, payload);
     if (!r.isValid()) {
         qWarning() << "InferencePlugin: delivery_module.send RPC failed";
     }
     qDebug() << "InferencePlugin: sent" << (rec.sealed ? "sealed" : "plaintext")
              << "prompt" << rec.id << "attempt" << (rec.retries + 1)
+             << "on" << sendTopic
              << (rec.sealed ? "provider " + rec.provider : QString());
     return true;
 }
@@ -463,13 +510,24 @@ QString InferencePlugin::topicForRoom(const QString& room) const
     return TOPIC_PREFIX + room + TOPIC_SUFFIX;
 }
 
+// A marketplace provider's session topic — where its prompts (and responses)
+// travel. Must match the provider side's sessionTopic().
+QString InferencePlugin::providerTopic(const QString& fingerprint) const
+{
+    return TOPIC_PREFIX + "p-" + fingerprint + TOPIC_SUFFIX;
+}
+
 void InferencePlugin::handleMessageReceived(const QVariantList& data)
 {
     // delivery_module.messageReceived: [hash, contentTopic, payload_base64, ts_ns]
     if (data.size() < 3) return;
 
     const QString topic = data[1].toString();
-    if (topic != topicForRoom(m_room)) return;   // not our room
+    // Ours if it's the room, the discovery feed, or a provider session
+    // topic we've joined to talk to a marketplace provider.
+    if (topic != topicForRoom(m_room) && topic != DISCOVERY_TOPIC &&
+        !m_sessionSubs.contains(topic))
+        return;
 
     const QByteArray payload =
         QByteArray::fromBase64(data[2].toString().toUtf8());
@@ -489,12 +547,15 @@ void InferencePlugin::handleMessageReceived(const QVariantList& data)
 // Verify a provider announce and upsert the roster. Self-certifying: the id
 // must be the fingerprint of the signing key, and the announce must verify
 // under that key — so nobody can advertise a box key under someone else's id.
+// v2 = room announce (single model, reachable via the room topic).
+// v3 = marketplace capability card from the discovery topic (models list,
+//      capacity, price scheme, reachable on the provider's session topic).
 void InferencePlugin::handleAnnounce(const QJsonObject& obj)
 {
+    const int     v         = obj.value("v").toInt();
     const QString id        = obj.value("id").toString();
     const QString signPkB64 = obj.value("signPk").toString();
     const QString boxPkB64  = obj.value("boxPk").toString();
-    const QString model     = obj.value("model").toString();
     const int     load      = obj.value("load").toInt();
     const qint64  ts        = static_cast<qint64>(obj.value("ts").toDouble());
     const QByteArray sig    = QByteArray::fromBase64(obj.value("sig").toString().toLatin1());
@@ -506,12 +567,40 @@ void InferencePlugin::handleAnnounce(const QJsonObject& obj)
         qWarning() << "InferencePlugin: announce id/key mismatch for" << id << "— ignored";
         return;
     }
-    const QByteArray canon = QString("inference/v1/announce|%1|%2|%3|%4|%5|%6")
-        .arg(id, signPkB64, boxPkB64, model,
-             QString::number(load), QString::number(ts)).toUtf8();
-    if (!InferenceIdentity::verify(canon, sig, signPk)) {
-        qWarning() << "InferencePlugin: bad announce signature from" << id << "— ignored";
-        return;
+
+    QString     model;
+    QStringList models;
+    int         cap = 0;
+    QString     price;
+    if (v >= 3) {
+        for (const QJsonValue& mv : obj.value("models").toArray())
+            models << mv.toString();
+        if (models.isEmpty()) return;
+        model = models.first();
+        cap   = obj.value("cap").toInt();
+        const QJsonObject priceObj = obj.value("price").toObject();
+        price = priceObj.value("scheme").toString();
+        const QString priceJson = QString::fromUtf8(
+            QJsonDocument(priceObj).toJson(QJsonDocument::Compact));
+        const QByteArray canon3 =
+            QString("inference/v1/announce3|%1|%2|%3|%4|%5|%6|%7|%8")
+                .arg(id, signPkB64, boxPkB64, models.join(','),
+                     QString::number(load), QString::number(cap),
+                     priceJson, QString::number(ts)).toUtf8();
+        if (!InferenceIdentity::verify(canon3, sig, signPk)) {
+            qWarning() << "InferencePlugin: bad v3 card signature from" << id << "— ignored";
+            return;
+        }
+    } else {
+        model  = obj.value("model").toString();
+        models = QStringList{ model };
+        const QByteArray canon = QString("inference/v1/announce|%1|%2|%3|%4|%5|%6")
+            .arg(id, signPkB64, boxPkB64, model,
+                 QString::number(load), QString::number(ts)).toUtf8();
+        if (!InferenceIdentity::verify(canon, sig, signPk)) {
+            qWarning() << "InferencePlugin: bad announce signature from" << id << "— ignored";
+            return;
+        }
     }
 
     // Freshness: reject stale/replayed announces. The signed `ts` must be near
@@ -530,10 +619,22 @@ void InferencePlugin::handleAnnounce(const QJsonObject& obj)
     p.signPk = signPk;
     p.boxPk  = boxPk;
     p.model  = model;
+    p.models = models;
     p.load   = load;
     p.lastSeenMs = nowMs();
+    // A provider heard on both channels keeps its marketplace entry: the
+    // session topic reaches it from anywhere, the room topic only here.
+    if (v >= 3 || p.origin.isEmpty()) {
+        p.origin = (v >= 3) ? "discovery" : "room";
+        p.topic  = (v >= 3) ? providerTopic(id) : topicForRoom(m_room);
+    }
+    if (v >= 3) {
+        p.cap   = cap;
+        p.price = price;
+    }
     if (isNew) {
-        qDebug() << "InferencePlugin: provider" << id << "joined roster (" << model << ")";
+        qDebug() << "InferencePlugin: provider" << id << "joined roster ("
+                 << models.join(',') << "," << p.origin << ")";
         emit eventResponse("providersChanged", QVariantList{ m_providers.size() });
     }
 }
@@ -619,11 +720,15 @@ QString InferencePlugin::listProviders()
     const qint64 now = nowMs();
     for (auto it = m_providers.constBegin(); it != m_providers.constEnd(); ++it) {
         QJsonObject o;
-        o["id"]    = it.key();
-        o["model"] = it->model;
-        o["load"]  = it->load;
-        o["ageMs"] = static_cast<double>(now - it->lastSeenMs);
-        o["live"]  = (now - it->lastSeenMs) < 30000;
+        o["id"]     = it.key();
+        o["model"]  = it->model;
+        o["models"] = QJsonArray::fromStringList(it->models);
+        o["load"]   = it->load;
+        o["cap"]    = it->cap;
+        o["origin"] = it->origin;
+        o["price"]  = it->price.isEmpty() ? "free" : it->price;
+        o["ageMs"]  = static_cast<double>(now - it->lastSeenMs);
+        o["live"]   = (now - it->lastSeenMs) < 30000;
         arr.append(o);
     }
     return QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact));

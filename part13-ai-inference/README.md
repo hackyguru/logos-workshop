@@ -30,15 +30,27 @@ the architecture is identical (see [part11-core-ping-pong](../part11-core-ping-p
 
 ## How it works
 
-- **Rendezvous:** the content topic `/inference/1/<room>/json`. Both sides
-  subscribe via `delivery_module`; the network carries prompts and responses.
-- **User (Basecamp):** `inference-core` (C++) sends
-  `{"type":"prompt","id":…,"from":…,"prompt":…}` and matches the returning
-  `{"type":"response","id":…,"text":…}` by id to compute latency. `inference-ui`
-  (QML) is a prompt/response chat screen.
+- **Rendezvous, two ways:**
+  - *Room* (legacy/local): the shared topic `/inference/1/<room>/json` — both
+    sides pick the same room and meet there, part11-style.
+  - *Marketplace* (discovery): providers publish **signed capability cards**
+    (models served, load/capacity, price scheme) every 10s on the well-known
+    topic `/inference/1/discovery/json`, and take prompts on their **own
+    session topic** `/inference/1/p-<fingerprint>/json`. Users browse the
+    global roster and reach any provider anywhere — no shared room needed.
+- **User (Basecamp):** `inference-core` (C++) builds a verified roster from
+  announces (v2 room / v3 discovery), seals prompts E2E to the chosen
+  provider (auto = least-loaded, or pinned, optionally filtered by model),
+  and matches sealed responses by id to compute latency. `inference-ui`
+  (QML) is a prompt/response chat screen with a marketplace browser.
 - **Provider (CLI):** `cli-provider/inference-provider.sh` loads the
   `inference_provider` module into logoscore. On each prompt it runs
-  `ollama` (via `curl $OLLAMA_URL/api/generate`, async) and publishes the answer.
+  `ollama` (via `curl $OLLAMA_URL/api/generate`, async) and publishes the
+  answer on the topic the prompt arrived on. `INFERENCE_MODELS=a,b,c`
+  advertises multiple models; sealed prompts may request any of them.
+- **Economics seam:** every v3 card carries a `price` object —
+  `{"scheme":"free"}` today. When LEZ private payments land, the scheme and
+  terms slot in here (the card signature already covers them).
 
 See **[docs/BRIEF.md](docs/BRIEF.md)** for the design + message protocol and
 **[docs/RUN.md](docs/RUN.md)** to build, install, and run it end to end.

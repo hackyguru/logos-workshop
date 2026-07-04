@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QList>
+#include <QSet>
 #include <QTimer>
 #include <QVariant>
 #include "inference_interface.h"
@@ -39,13 +40,21 @@ struct PromptRec {
     qint64  lastSendMs = 0;
 };
 
-// A provider we've heard a (signature-verified) announce from.
+// A provider we've heard a (signature-verified) announce from — either in the
+// current room (legacy v2) or on the global discovery topic (v3 capability
+// card). `topic` is where prompts for it go: the room topic for room
+// providers, its own session topic for marketplace ones.
 struct ProviderRec {
-    QByteArray signPk;     // Ed25519 — verifies its responses
-    QByteArray boxPk;      // X25519 — we seal prompts to this
-    QString    model;
-    int        load       = 0;
-    qint64     lastSeenMs = 0;
+    QByteArray  signPk;     // Ed25519 — verifies its responses
+    QByteArray  boxPk;      // X25519 — we seal prompts to this
+    QString     model;      // primary model (first of models)
+    QStringList models;     // every model served (v3; [model] for v2)
+    QString     topic;      // where to send prompts for this provider
+    QString     origin;     // "room" | "discovery"
+    QString     price;      // price scheme ("free" until LEZ payments land)
+    int         cap        = 0;   // concurrency capacity (v3; 0 = unknown)
+    int         load       = 0;
+    qint64      lastSeenMs = 0;
 };
 
 class InferencePlugin : public QObject, public InferenceInterface
@@ -84,12 +93,14 @@ public:
     Q_INVOKABLE bool    unlock(const QString& passphrase) override;
     Q_INVOKABLE bool    setRequireEncryption(bool required) override;
     Q_INVOKABLE bool    setPreferredProvider(const QString& fingerprint) override;
+    Q_INVOKABLE bool    setModelFilter(const QString& model) override;
 
 signals:
     void eventResponse(const QString& eventName, const QVariantList& args);
 
 private:
     QString topicForRoom(const QString& room) const;
+    QString providerTopic(const QString& fingerprint) const;
     void    handleMessageReceived(const QVariantList& data);
     void    handleAnnounce(const QJsonObject& obj);
     void    handleResponse(const QJsonObject& obj);
@@ -106,7 +117,9 @@ private:
     QString           m_room = "lobby";
     QList<PromptRec>  m_prompts;   // newest first
     QHash<QString, ProviderRec> m_providers;   // fingerprint → verified announce
+    QSet<QString>     m_sessionSubs;           // provider session topics we joined
     QString           m_preferredProvider;     // "" = auto (least loaded)
+    QString           m_modelFilter;           // "" = any model
     bool              m_requireEncryption = false;
     qint64            m_timeoutMs = 90000;     // INFERENCE_TIMEOUT_MS override
     int               m_maxRetries = 2;

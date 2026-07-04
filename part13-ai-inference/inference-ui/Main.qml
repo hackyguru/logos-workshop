@@ -19,6 +19,7 @@ Item {
     property var    providers: []       // verified roster from signed announces
     property bool   requireEncryption: false
     property string preferredProvider: ""   // "" = auto
+    property string modelFilter: ""         // "" = any model
 
     // ── Logos bridge helpers ─────────────────────────────────────────
 
@@ -75,13 +76,19 @@ Item {
             identityBackend   = st.backend || ""
             requireEncryption = !!st.requireEncryption
             preferredProvider = st.preferredProvider || ""
+            modelFilter       = st.modelFilter || ""
         } catch (e) { /* keep previous state */ }
+    }
+
+    function providerModels(p) {
+        return (p.models && p.models.length > 0) ? p.models.join(", ") : (p.model || "?")
     }
 
     function providerLabel(fp) {
         for (var i = 0; i < providers.length; i++)
             if (providers[i].id === fp)
-                return fp.substring(0, 10) + "… (" + providers[i].model + ")"
+                return (providers[i].origin === "discovery" ? "🌐 " : "🚪 ")
+                       + fp.substring(0, 10) + "… (" + providerModels(providers[i]) + ")"
         return fp.substring(0, 10) + "…"
     }
 
@@ -340,6 +347,17 @@ Item {
                         refreshIdentity()
                     }
                 }
+                TextField {
+                    id: modelFilterField
+                    Layout.preferredWidth: 120
+                    placeholderText: "any model"
+                    text: modelFilter
+                    font.pixelSize: 12
+                    onEditingFinished: {
+                        callInf("setModelFilter", [text.trim()])
+                        refreshIdentity()
+                    }
+                }
                 CheckBox {
                     text: "Require 🔒"
                     checked: requireEncryption
@@ -347,6 +365,83 @@ Item {
                     onToggled: {
                         callInf("setRequireEncryption", [checked])
                         refreshIdentity()
+                    }
+                }
+            }
+        }
+
+        // Marketplace: every provider heard on the global discovery topic (🌐)
+        // or in this room (🚪). Click a row to pin prompts to that provider.
+        Rectangle {
+            visible: identityInit && providers.length > 0
+            Layout.fillWidth: true
+            Layout.preferredHeight: Math.min(30 + providers.length * 30, 130)
+            color: "#f8f9fa"
+            border.color: "#dfe3e8"; border.width: 1; radius: 8
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 10
+                spacing: 4
+
+                Text {
+                    text: "Marketplace — " + liveProviders() + " live provider(s)"
+                    color: "#555"; font.pixelSize: 12; font.weight: Font.DemiBold
+                }
+                ListView {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    model: providers
+                    delegate: Rectangle {
+                        width: ListView.view.width
+                        height: 28
+                        radius: 4
+                        color: modelData.id === preferredProvider ? "#e8f0fe"
+                               : (pRow.containsMouse ? "#f1f3f4" : "transparent")
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 6; anchors.rightMargin: 6
+                            spacing: 8
+                            Text {
+                                text: (modelData.origin === "discovery" ? "🌐" : "🚪")
+                                      + (modelData.live ? "" : " 💤")
+                                font.pixelSize: 12
+                            }
+                            Text {
+                                text: modelData.id.substring(0, 12) + "…"
+                                font.pixelSize: 12; font.family: "Menlo"
+                                color: "#1f2d3d"
+                            }
+                            Text {
+                                Layout.fillWidth: true
+                                text: providerModels(modelData)
+                                font.pixelSize: 12; color: "#555"
+                                elide: Text.ElideRight
+                            }
+                            Text {
+                                text: "load " + modelData.load
+                                      + (modelData.cap > 0 ? "/" + modelData.cap : "")
+                                font.pixelSize: 11; color: "#888"
+                            }
+                            Text {
+                                text: modelData.price || "free"
+                                font.pixelSize: 11; color: "#188038"
+                            }
+                        }
+                        MouseArea {
+                            id: pRow
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                // Click toggles: pin this provider, or unpin back to auto.
+                                const fp = modelData.id === preferredProvider ? "" : modelData.id
+                                callInf("setPreferredProvider", [fp])
+                                refreshIdentity()
+                            }
+                        }
                     }
                 }
             }

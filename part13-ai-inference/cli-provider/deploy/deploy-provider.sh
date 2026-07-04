@@ -69,7 +69,7 @@ log "building logoscore CLI + modules on the VM (first run is long)…"
 set -euo pipefail
 export PATH="/nix/var/nix/profiles/default/bin:$PATH"
 
-echo "[remote] nix build logoscore-cli @ $LOGOSCORE_REV (aarch64-linux)…"
+echo "[remote] nix build logoscore-cli @ $LOGOSCORE_REV ($(uname -m)-linux)…"
 nix build "github:logos-co/logos-logoscore-cli/$LOGOSCORE_REV#cli" \
     -o "$HOME/.logoscore-cli" --print-build-logs
 LOGOSCORE="$HOME/.logoscore-cli/bin/logoscore"
@@ -97,14 +97,19 @@ Environment=INFERENCE_TCPPORT=$INFERENCE_TCPPORT
 Environment=OLLAMA_URL=http://127.0.0.1:11434
 Environment=DAEMON_LOG=/home/ubuntu/logoscore-inference.log
 ExecStart=/home/ubuntu/cli-provider/inference-provider.sh
-Restart=on-failure
+# always: the script exits 0 when the daemon dies underneath it (a daemon
+# segfault must not leave the provider offline)
+Restart=always
 RestartSec=15
 
 [Install]
 WantedBy=multi-user.target
 UNIT
 sudo systemctl daemon-reload
-sudo systemctl enable --now inference-provider
+sudo systemctl enable inference-provider
+# restart (not enable --now): a redeploy must load the fresh modules even when
+# the service is already running
+sudo systemctl restart inference-provider
 sleep 8
 systemctl --no-pager --full status inference-provider | head -25 || true
 REMOTE

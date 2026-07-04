@@ -63,10 +63,20 @@ Inside the module, each prompt becomes:
 | Env / arg | Default | Meaning |
 |-----------|---------|---------|
 | `$1` / `ROOM` | `lobby` | Room → topic `/inference/1/<room>/json` |
-| `INFERENCE_MODEL` | `tinyllama` | ollama model to run |
+| `INFERENCE_MODEL` | `tinyllama` | default ollama model to run |
+| `INFERENCE_MODELS` | *(unset)* | comma-separated list of models to advertise on the marketplace (first = default) |
 | `OLLAMA_URL` | `http://localhost:11434` | ollama HTTP endpoint |
 | `INFERENCE_TCPPORT` | `60010` | Waku TCP port (Basecamp uses 60000; distinct so both coexist) |
 | `LOGOSCORE` | auto | path to the `logoscore` binary |
+
+## Marketplace discovery
+
+Beyond the room, the provider announces a **signed capability card** every 10s
+on the global discovery topic `/inference/1/discovery/json` — models served,
+load/capacity, and a price scheme (`free` until LEZ payments land) — and takes
+prompts directly on its **session topic** `/inference/1/p-<fingerprint>/json`.
+Any inference user anywhere can discover it and talk to it without sharing a
+room; responses return on the same session topic.
 
 ## Notes
 

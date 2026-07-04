@@ -65,6 +65,10 @@ public:
     Q_INVOKABLE virtual bool    setRequireEncryption(bool required) = 0;
     // Pin prompts to one provider fingerprint ("" = auto, least loaded).
     Q_INVOKABLE virtual bool    setPreferredProvider(const QString& fingerprint) = 0;
+    // Marketplace filter: only route prompts to providers serving this model
+    // ("" = any). Sealed prompts also carry the request so multi-model
+    // providers run the right one.
+    Q_INVOKABLE virtual bool    setModelFilter(const QString& model) = 0;
 };
 
 #define InferenceInterface_iid "org.logos.InferenceInterface"

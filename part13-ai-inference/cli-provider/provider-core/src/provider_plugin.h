@@ -44,18 +44,23 @@ signals:
 private:
     void    ensureIdentity();
     void    sendAnnounce();
+    void    sendCard(const QString& signPk, const QString& boxPk, int load);
     QString topicForRoom(const QString& room) const;
+    QString sessionTopic() const;
     void    handleMessageReceived(const QVariantList& data);
     void    runInference(const QString& id, const QString& replyPkB64,
-                         const QString& prompt, const QString& topic);
+                         const QString& prompt, const QString& model,
+                         const QString& topic);
     void    sendResponse(const QString& id, const QString& replyPkB64,
-                         const QString& text, const QString& topic);
+                         const QString& text, const QString& model,
+                         const QString& topic);
     bool    invokeBool(const char* what, const QString& method,
                        const QVariant& arg = QVariant());
 
     QString          m_id;
     QString          m_room;
-    QString          m_model;       // ollama model (INFERENCE_MODEL, default tinyllama)
+    QString          m_model;       // default ollama model (first of m_models)
+    QStringList      m_models;      // all models served (INFERENCE_MODELS csv)
     QString          m_ollamaUrl;   // OLLAMA_URL, default http://localhost:11434
     bool             m_started        = false;
     bool             m_createNodeDone = false;
