@@ -1,0 +1,26 @@
+{
+  "name": "easy_node_ui",
+  "version": "0.1.0",
+  "type": "ui_qml",
+  "category": "example",
+  "description": "One-button Logos blockchain node \u2014 start a node, see your wallet address, balance and peers, inscribe text on-chain",
+  "view": "Main.qml",
+  "icon": "icons/easy-node.png",
+  "dependencies": [
+    "logos_execution_zone",
+    "easy_node"
+  ],
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}
