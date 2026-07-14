@@ -111,6 +111,7 @@ private:
     LogosAPIClient* m_lez = nullptr;
     bool      m_lezOpen = false;
     bool      m_lezBusy = false;
+    bool      m_lezSyncing = false;   // background sync in flight (NOT user-busy)
     QString   m_lezStage;
     QString   m_lezAccount;           // private account
     QString   m_lezPublicAccount;

@@ -514,18 +514,21 @@ void LogosWalletPlugin::startBackgroundSync()
     m_lezSyncTimer = new QTimer(this);
     m_lezSyncTimer->setInterval(6000);
     connect(m_lezSyncTimer, &QTimer::timeout, this, [this]() {
-        if (!m_lezOpen || m_lezBusy) return;
+        // Yield to any real user op, and never re-enter. Crucially this uses a
+        // SEPARATE flag (m_lezSyncing), NOT m_lezBusy — background sync must not
+        // look "busy", or it would disable the UI Send and make lezTransfer
+        // reject the user's transfer (module calls serialize safely anyway).
+        if (!m_lezOpen || m_lezBusy || m_lezSyncing) return;
         const Reply h = lezCall(QStringLiteral("get_current_block_height"), {}, 10000);
         const Reply l = lezCall(QStringLiteral("get_last_synced_block"), {}, 10000);
         if (!h.ok || !l.ok) return;
         const qlonglong height = h.value.toLongLong(), last = l.value.toLongLong();
         if (last >= height) return;                       // caught up
-        m_lezBusy = true;                                 // block reads during the sync
-        m_lezStage = QStringLiteral("syncing");
+        m_lezSyncing = true;
         lezCall(QStringLiteral("sync_to_block"),
                 {QVariant::fromValue(int(qMin(last + LEZ_SYNC_CHUNK, height)))}, 120000);
         lezSave();
-        m_lezBusy = false; m_lezStage.clear();
+        m_lezSyncing = false;
     });
     m_lezSyncTimer->start();
 }
