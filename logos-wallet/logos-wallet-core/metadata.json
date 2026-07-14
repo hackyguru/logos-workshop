@@ -1,0 +1,22 @@
+{
+  "name": "logos_wallet",
+  "version": "0.1.0",
+  "type": "core",
+  "category": "wallet",
+  "description": "Unified Bedrock (base chain) + LEZ (execution zone) wallet \u2014 node lifecycle, base transfers/inscriptions, and private LEZ payments",
+  "main": "logos_wallet_plugin",
+  "dependencies": [],
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}

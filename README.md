@@ -9,6 +9,7 @@ This repository contains code and documentation for 5 beginner-friendly applicat
 - **Part 5** — *🚧 Work in progress — not yet in a working state.* An on-chain counter app — a single `u64` that lives on the Logos blockchain (LEZ), anyone can tap Increment and everyone pointed at the same sequencer sees it go up. Built as a minimal analogue of [`logos-co/whisper-wall`](https://github.com/logos-co/whisper-wall), with all the payment / privacy / admin complexity stripped out. The SPEL program compiles + the Basecamp plugin scaffold is in place, but live sequencer validation is blocked on upstream (public devnet is 502 post-upgrade, local docker stack hits SPEL #140 on macOS). See the note at the top of [`part5-onchain-counter/`](part5-onchain-counter/) before digging in.
 - **Part 6** — A shared-colour app: pick a colour from a palette and every peer's background changes to match, synced over `logos-delivery-module`. The smallest end-to-end example of the messaging pattern — a good template to copy.
 - **Part 9** — Trustless multiplayer **Texas Hold'em** poker over `logos-delivery-module`. Because messaging is broadcast pub/sub, it uses **mental poker** (Shamir–Rivest–Adleman commutative encryption) to shuffle and deal without a trusted dealer — your hole cards stay secret and nobody controls the deck. The workshop's first module to link an external library (OpenSSL `libcrypto`). See [`part9-p2p-poker/`](part9-p2p-poker/).
+- **Part 14** — **Easy Node**: a one-button Logos blockchain node for people who have never touched a terminal. One press generates the node config + wallet keys via the bundled `blockchain_module` and starts the node; the tab then shows wallet address, balance, connected peers and sync status, with a faucet helper and on-chain text **inscriptions**. Pure QML — no C++ core. See [`part14-easy-node/`](part14-easy-node/).
 
 ## Prerequisites
 
@@ -49,9 +50,12 @@ Part 5 pulls the RISC-Zero zkVM Docker image (~500 MB) for the on-chain program 
 ├── part6-shared-color/
 │   ├── shared-color-core/       # Shared-colour backend (C++, integrates delivery_module)
 │   └── shared-color-ui/         # Shared-colour UI (QML)
-└── part9-p2p-poker/
-    ├── poker-core/              # Poker backend (C++: delivery_module + OpenSSL mental poker + game engine)
-    └── poker-ui/                # Poker table UI (QML)
+├── part9-p2p-poker/
+│   ├── poker-core/              # Poker backend (C++: delivery_module + OpenSSL mental poker + game engine)
+│   └── poker-ui/                # Poker table UI (QML)
+└── part14-easy-node/
+    ├── easy-node-core/          # Easy Node backend (C++, wraps the bundled blockchain_module)
+    └── easy-node-ui/            # One-button node UI (QML)
 ```
 
 `core` modules are C++ Qt plugins that expose `Q_INVOKABLE` methods. They install into Basecamp's `modules/` directory and have no UI of their own. `ui_qml` modules are QML-only (no compile step) and install into Basecamp's `plugins/` directory as sidebar tabs — they call into core modules via `logos.callModule(...)`.
@@ -83,6 +87,9 @@ nix build --override-input counter path:../counter-core '.#lgx-portable' --out-l
 
 # e.g. from part9-p2p-poker/poker-ui
 nix build --override-input poker path:../poker-core '.#lgx-portable' --out-link result-portable
+
+# e.g. from part14-easy-node/easy-node-ui (input already defaults to the sibling)
+nix build --override-input easy_node path:../easy-node-core '.#lgx-portable' --out-link result-portable
 ```
 
 ### Part 4 — installing `storage_module`
