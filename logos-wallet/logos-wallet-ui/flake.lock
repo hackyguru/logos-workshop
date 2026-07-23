@@ -45139,14 +45139,18 @@
         "logos-module-builder": "logos-module-builder_18"
       },
       "locked": {
-        "path": "../logos-wallet-core",
-        "type": "path"
+        "lastModified": 1784841022,
+        "narHash": "sha256-s6gn5lAPdpqLyBpIyI/Y3aAwpx0/U6SuBmsXXPS+dv8=",
+        "owner": "hackyguru",
+        "repo": "logos-wallet-core",
+        "rev": "4a471b48678d1d4b0554e847e097afc13cdfc96f",
+        "type": "github"
       },
       "original": {
-        "path": "../logos-wallet-core",
-        "type": "path"
-      },
-      "parent": []
+        "owner": "hackyguru",
+        "repo": "logos-wallet-core",
+        "type": "github"
+      }
     },
     "nix-bundle-appimage": {
       "inputs": {
