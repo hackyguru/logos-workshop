@@ -74,6 +74,16 @@ public:
     Q_INVOKABLE virtual QString lezBridgeIn(const QString& amount) = 0;
     // Claim vault → private balance. Deferred → lezBridgeFinished.
     Q_INVOKABLE virtual QString lezClaimVault(const QString& amount) = 0;
+
+    // ── Danger zone ──────────────────────────────────────────────────
+    // Delete the on-disk LEZ wallet (storage + meta) after stopping the
+    // background sync. Synchronous: {"ok","needsRestart"}. needsRestart is
+    // true when the zone module already holds the old wallet open in-process
+    // (it exposes no close), so create/restore is refused until relaunch.
+    Q_INVOKABLE virtual QString lezReset() = 0;
+    // Rebuild the wallet from a BIP39 recovery phrase. Only valid when no
+    // wallet exists on disk (reset first). Deferred → lezRestoreFinished.
+    Q_INVOKABLE virtual QString lezRestore(const QString& mnemonic) = 0;
 };
 
 #define LogosWalletInterface_iid "org.logos.LogosWalletInterface"

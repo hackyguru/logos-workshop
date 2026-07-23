@@ -52,6 +52,8 @@ public:
     Q_INVOKABLE QString lezReceiveAddress(const QString& accountHex) override;
     Q_INVOKABLE QString lezBridgeIn(const QString& amount) override;
     Q_INVOKABLE QString lezClaimVault(const QString& amount) override;
+    Q_INVOKABLE QString lezReset() override;
+    Q_INVOKABLE QString lezRestore(const QString& mnemonic) override;
 
 signals:
     void eventResponse(const QString& eventName, const QVariantList& args);

@@ -1025,3 +1025,101 @@ QString LogosWalletPlugin::lezClaimVault(const QString& amount)
     });
     return dump(QJsonObject{{"ok", true}, {"accepted", true}});
 }
+
+// ── LEZ: danger zone — reset + restore ───────────────────────────────
+
+QString LogosWalletPlugin::lezReset()
+{
+    if (m_lezBusy) return errJson(QStringLiteral("The wallet is busy — try again in a moment."));
+    if (m_lezSyncTimer) { m_lezSyncTimer->stop(); m_lezSyncTimer->deleteLater(); m_lezSyncTimer = nullptr; }
+    // The zone module keeps an opened wallet in memory and exposes no close —
+    // once the files are gone, a fresh create/restore is refused until the
+    // app restarts. Report that so the UI can say so honestly.
+    const bool needsRestart = m_lezOpen;
+    m_lezOpen = false; m_lezSyncing = false;
+    m_lezAccount.clear(); m_lezPublicAccount.clear(); m_lezError.clear(); m_lezStage.clear();
+    QDir d(lezDir());
+    if (d.exists() && !d.removeRecursively())
+        return errJson(QStringLiteral("Could not delete the wallet files."));
+    return dump(QJsonObject{{"ok", true}, {"needsRestart", needsRestart}});
+}
+
+QString LogosWalletPlugin::lezRestore(const QString& mnemonic)
+{
+    if (m_lezBusy) return dump(QJsonObject{{"ok", true}, {"accepted", false}, {"busy", true}});
+    if (m_lezOpen && !m_lezAccount.isEmpty())
+        return errJson(QStringLiteral("A wallet is already open — reset it first."));
+    if (QFile::exists(lezDir() + "/storage.json"))
+        return errJson(QStringLiteral("A wallet already exists on disk — reset it first."));
+    const QString mn = mnemonic.trimmed().toLower().simplified();
+    const int words = mn.isEmpty() ? 0 : mn.split(QLatin1Char(' ')).size();
+    if (words != 12 && words != 24)
+        return errJson(QStringLiteral("A recovery phrase is 12 or 24 words."));
+    m_lezBusy = true; m_lezError.clear(); m_lezStage = QStringLiteral("restoring");
+    QTimer::singleShot(0, this, [this, mn]() {
+        auto finish = [this](const QString& json) {
+            m_lezBusy = false; m_lezStage.clear();
+            emit eventResponse("lezRestoreFinished", {json});
+        };
+        const QString dir = lezDir();
+        const QString cfg = dir + "/config.json";
+        const QString storage = dir + "/storage.json";
+        QDir().mkpath(dir);
+        if (!QFile::exists(cfg)) {
+            QFile f(cfg); f.open(QIODevice::WriteOnly);
+            f.write(QJsonDocument(QJsonObject{{"sequencer_addr", LEZ_SEQUENCER},
+                                              {"seq_poll_timeout", "30s"},
+                                              {"seq_tx_poll_max_blocks", 60},
+                                              {"seq_poll_max_retries", 30},
+                                              {"seq_block_poll_max_amount", 100}})
+                        .toJson(QJsonDocument::Compact));
+        }
+        const QString metaPath = dir + "/meta.json";
+        QJsonObject meta = metaRead(metaPath);
+        QString pw = meta.value("lezPassword").toString();
+        if (pw.isEmpty()) {
+            pw = QString::number(QRandomGenerator::global()->generate64(), 16)
+               + QString::number(QRandomGenerator::global()->generate64(), 16);
+            meta["lezPassword"] = pw;
+        }
+        // The zone module's restore_storage takes (config, storage, QVariant);
+        // the exact shape of the third argument is undocumented, so try the
+        // plain mnemonic string first, then a {mnemonic,password} map.
+        Reply r = lezCall(QStringLiteral("restore_storage"), {cfg, storage, mn}, 300000);
+        if (!r.ok) {
+            QVariantMap arg;
+            arg.insert(QStringLiteral("mnemonic"), mn);
+            arg.insert(QStringLiteral("password"), pw);
+            const Reply r2 = lezCall(QStringLiteral("restore_storage"),
+                                     {cfg, storage, QVariant::fromValue(arg)}, 300000);
+            if (r2.ok) r = r2;
+        }
+        if (!r.ok) {
+            QFile::remove(storage);
+            QString e = r.error;
+            if (e.contains(QStringLiteral("already open"), Qt::CaseInsensitive))
+                e += QStringLiteral(" — restart Basecamp, then run the restore again.");
+            m_lezError = e;
+            finish(errJson("Could not restore the wallet: " + e));
+            return;
+        }
+        lezSave();
+        meta["lezCreated"] = true;
+        meta.remove("lezAccount");           // fresh derivation from the phrase
+        meta.remove("lezPublicAccount");
+        metaWrite(metaPath, meta);
+        m_lezOpen = true;
+        m_lezAccount.clear(); m_lezPublicAccount.clear();
+        const Reply a = lezCall(QStringLiteral("create_account_private"), {}, 120000);
+        if (a.ok) {
+            m_lezAccount = a.value.toString();
+            lezSave();
+            meta["lezAccount"] = m_lezAccount;
+            metaWrite(metaPath, meta);
+        }
+        startBackgroundSync();               // balances appear as sync catches up
+        finish(dump(QJsonObject{{"ok", true}, {"account", m_lezAccount},
+                                {"accountB58", m_lezAccount.isEmpty() ? QString() : toB58(m_lezAccount)}}));
+    });
+    return dump(QJsonObject{{"ok", true}, {"accepted", true}});
+}
