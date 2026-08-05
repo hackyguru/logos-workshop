@@ -10,7 +10,7 @@ else()
 endif()
 
 logos_module(
-    NAME logos_wallet
+    NAME persona_core
     SOURCES
         src/logos_wallet_interface.h
         src/logos_wallet_plugin.h

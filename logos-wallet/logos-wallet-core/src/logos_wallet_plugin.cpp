@@ -9,7 +9,11 @@
 #include <QJsonObject>
 #include <QRandomGenerator>
 #include <QRegularExpression>
+#include <QSet>
 #include <QTimer>
+#include <algorithm>
+#include <utility>
+#include <vector>
 
 // ── Network identity ─────────────────────────────────────────────────
 static const QString NODE_VERSION = QStringLiteral("0.2.0");
@@ -24,7 +28,7 @@ static const QString HTTP_ADDR = QStringLiteral("127.0.0.1:18080");
 
 static const QString LEZ = QStringLiteral("logos_execution_zone");
 static const QString LEZ_SEQUENCER = QStringLiteral("https://testnet.lez.logos.co");
-static const int     LEZ_SYNC_CHUNK = 1000;
+static const int     LEZ_SYNC_CHUNK = 250;
 // The zone's genesis PoW faucet account (base58 EfQhKQAkX2FJiwNii2WFQsGndjvF1Mzd7RuVe7QdPLw7).
 static const QString PINATA_ID =
     QStringLiteral("cafecafecafecafecafecafecafecafecafecafecafecafecafecafecafecafe");
@@ -153,6 +157,16 @@ QString LogosWalletPlugin::nodeConfigPath() const { return baseDir() + "/user_co
 QString LogosWalletPlugin::nodeKeystorePath() const { return baseDir() + "/keystore.yaml"; }
 QString LogosWalletPlugin::nodePidPath() const    { return baseDir() + "/node.pid"; }
 QString LogosWalletPlugin::lezDir() const         { return baseDir() + "/lez"; }
+
+// The sequencer this wallet talks to. A user override (meta.json) wins over the
+// built-in default, so an endpoint outage or a self-hosted sequencer needs no
+// rebuild. Trailing slashes are trimmed so URL comparisons are stable.
+QString LogosWalletPlugin::sequencerUrl() const
+{
+    QString u = metaRead(lezDir() + "/meta.json").value("sequencerUrl").toString().trimmed();
+    while (u.endsWith(QLatin1Char('/'))) u.chop(1);
+    return u.isEmpty() ? LEZ_SEQUENCER : u;
+}
 
 // ── Bedrock: node daemon lifecycle ───────────────────────────────────
 
@@ -361,7 +375,8 @@ QString LogosWalletPlugin::baseAccounts()
     return dump(QJsonObject{{"ok", true}, {"accounts", list}});
 }
 
-QString LogosWalletPlugin::baseSend(const QString& toAddress, const QString& amount)
+QString LogosWalletPlugin::baseSend(const QString& fromAddress, const QString& toAddress,
+                                    const QString& amount)
 {
     static const QRegularExpression hex64(QStringLiteral("^[0-9a-fA-F]{64}$"));
     if (!hex64.match(toAddress).hasMatch())
@@ -370,7 +385,14 @@ QString LogosWalletPlugin::baseSend(const QString& toAddress, const QString& amo
     const qulonglong v = amount.trimmed().toULongLong(&ok);
     if (!ok || v == 0) return errJson(QStringLiteral("Amount must be a positive whole number."));
     if (!nodeAlive()) return errJson(QStringLiteral("The node is not running."));
-    const QString pk = leaderPk();
+    // Sender: the named keystore account, or the Main (LeaderFunding) key when
+    // none is given. The node signs from its keystore, so any listed account
+    // works; change returns to the sender.
+    QString pk = fromAddress.trimmed().toLower();
+    if (pk.isEmpty())
+        pk = leaderPk();
+    else if (!hex64.match(pk).hasMatch())
+        return errJson(QStringLiteral("Sender must be 64 hex characters."));
     if (pk.isEmpty()) return errJson(QStringLiteral("No base wallet key found."));
 
     const QByteArray info = curlGet(QStringLiteral("http://") + HTTP_ADDR + "/cryptarchia/info", 3);
@@ -413,6 +435,151 @@ void LogosWalletPlugin::finishInscribe(const QString& json)
 {
     if (m_confirmTimer) { m_confirmTimer->stop(); m_confirmTimer->deleteLater(); m_confirmTimer = nullptr; }
     emit eventResponse("inscribeFinished", {json});
+}
+
+QString LogosWalletPlugin::recentInscriptions()
+{
+    if (!nodeAlive()) return errJson(QStringLiteral("The node is not running."));
+    // Collect text inscriptions across a wide slice of history. Deferred:
+    // it's a few seconds of local HTTP calls, past the IPC timeout. Two passes:
+    //   (1) walk the tip's parent chain for the unfinalized head, then
+    //   (2) slot-range queries for the finalized bulk (many blocks per call).
+    QTimer::singleShot(0, this, [this]() {
+        auto finish = [this](const QString& json) {
+            emit eventResponse("recentInscriptionsFinished", {json});
+        };
+        const QByteArray ci = curlGet(QStringLiteral("http://") + HTTP_ADDR + "/cryptarchia/info", 3);
+        const QJsonObject info =
+            QJsonDocument::fromJson(ci).object().value("cryptarchia_info").toObject();
+        QString cur = info.value("tip").toString();
+        const qint64 tipSlot = static_cast<qint64>(info.value("slot").toDouble());
+        if (cur.isEmpty()) { finish(errJson(QStringLiteral("Could not read the chain tip."))); return; }
+
+        const int MAX_ITEMS = 100;
+        const qint64 HEAD_SLOTS = 6000;   // walk the head until safely past the
+        const int HEAD_CAP = 240;         // finalized frontier (~4000-slot lag)
+        const qint64 CHUNK = 25000;       // finalized scan window per query
+        const int MAX_CHUNKS = 16;        // → ~400k more slots (days of history)
+
+        QSet<QString> seen;
+        std::vector<std::pair<qint64, QJsonObject>> found;
+
+        // Pull every text inscription out of one block. Text inscriptions are
+        // JSON {"tx_uuid","text"}; LEZ zone-data inscriptions aren't and are
+        // skipped. Deduped by slot+channel+text.
+        auto harvest = [&](const QJsonObject& blk) {
+            const qint64 slot =
+                static_cast<qint64>(blk.value("header").toObject().value("slot").toDouble());
+            for (const QJsonValue& txv : blk.value("transactions").toArray()) {
+                const QJsonObject mt = txv.toObject().value("mantle_tx").toObject();
+                const QString txHash = mt.value("hash").toString();
+                for (const QJsonValue& opv : mt.value("ops").toArray()) {
+                    const QJsonObject p = opv.toObject().value("payload").toObject();
+                    if (!p.contains(QStringLiteral("inscription"))) continue;
+                    const QByteArray raw =
+                        QByteArray::fromHex(p.value("inscription").toString().toLatin1());
+                    const QJsonDocument d = QJsonDocument::fromJson(raw);
+                    if (!d.isObject()) continue;
+                    const QJsonObject io = d.object();
+                    if (!io.value("text").isString()) continue;
+                    const QString text = io.value("text").toString();
+                    const QString channel = p.value("channel_id").toString();
+                    const QString key = QString::number(slot) + '|' + channel + '|' + text;
+                    if (seen.contains(key)) continue;
+                    seen.insert(key);
+                    found.push_back({slot, QJsonObject{{"text", text},
+                                                       {"signer", p.value("signer").toString()},
+                                                       {"channel", channel},
+                                                       {"slot", slot},
+                                                       {"tx", txHash}}});
+                }
+            }
+        };
+
+        // (1) Head: walk parent links until we're past the finalized frontier.
+        const QString zeros(64, QLatin1Char('0'));
+        qint64 lowSlot = tipSlot;
+        for (int i = 0; i < HEAD_CAP; ++i) {
+            const QByteArray bb =
+                curlGet(QStringLiteral("http://%1/cryptarchia/blocks/%2").arg(HTTP_ADDR, cur), 3);
+            if (bb.isEmpty()) break;
+            const QJsonObject blk = QJsonDocument::fromJson(bb).object();
+            harvest(blk);
+            const QJsonObject hdr = blk.value("header").toObject();
+            lowSlot = static_cast<qint64>(hdr.value("slot").toDouble());
+            const QString parent = hdr.value("parent_block").toString();
+            if (parent.isEmpty() || parent == zeros) break;
+            cur = parent;
+            if (lowSlot <= tipSlot - HEAD_SLOTS) break;
+        }
+
+        // (2) Finalized bulk: slot-range queries below the head. Each returns
+        //     many blocks, so this covers far more history per HTTP call.
+        qint64 hi = lowSlot - 1;
+        for (int c = 0; c < MAX_CHUNKS && hi > 0; ++c) {
+            const qint64 lo = qMax<qint64>(0, hi - CHUNK);
+            const QByteArray bb =
+                curlGet(QStringLiteral("http://%1/cryptarchia/blocks?slot_from=%2&slot_to=%3")
+                            .arg(HTTP_ADDR).arg(lo).arg(hi),
+                        8);
+            const QJsonArray arr = QJsonDocument::fromJson(bb).array();
+            for (const QJsonValue& bv : arr) harvest(bv.toObject());
+            if (lo == 0) break;
+            hi = lo - 1;
+        }
+
+        // Newest first, capped.
+        std::sort(found.begin(), found.end(),
+                  [](const std::pair<qint64, QJsonObject>& a,
+                     const std::pair<qint64, QJsonObject>& b) { return a.first > b.first; });
+        QJsonArray out;
+        for (const auto& f : found) {
+            if (out.size() >= MAX_ITEMS) break;
+            out.append(f.second);
+        }
+        finish(dump(QJsonObject{{"ok", true}, {"inscriptions", out}}));
+    });
+    return dump(QJsonObject{{"ok", true}, {"accepted", true}});
+}
+
+QString LogosWalletPlugin::recentBlocks()
+{
+    if (!nodeAlive()) return errJson(QStringLiteral("The node is not running."));
+    QTimer::singleShot(0, this, [this]() {
+        auto finish = [this](const QString& json) {
+            emit eventResponse("recentBlocksFinished", {json});
+        };
+        const QByteArray ci = curlGet(QStringLiteral("http://") + HTTP_ADDR + "/cryptarchia/info", 3);
+        const QJsonObject info =
+            QJsonDocument::fromJson(ci).object().value("cryptarchia_info").toObject();
+        QString cur = info.value("tip").toString();
+        // Walking parent links, each step is exactly one block lower.
+        const qint64 tipHeight = static_cast<qint64>(info.value("height").toDouble());
+        if (cur.isEmpty()) { finish(errJson(QStringLiteral("Could not read the chain tip."))); return; }
+
+        const int MAX_BLOCKS = 30;
+        const QString zeros(64, QLatin1Char('0'));
+        QJsonArray out;
+        for (int i = 0; i < MAX_BLOCKS; ++i) {
+            const QByteArray bb =
+                curlGet(QStringLiteral("http://%1/cryptarchia/blocks/%2").arg(HTTP_ADDR, cur), 3);
+            if (bb.isEmpty()) break;
+            const QJsonObject blk = QJsonDocument::fromJson(bb).object();
+            const QJsonObject hdr = blk.value("header").toObject();
+            out.append(QJsonObject{
+                {"height", tipHeight - i},
+                {"slot", static_cast<qint64>(hdr.value("slot").toDouble())},
+                {"id", hdr.value("id").toString()},
+                {"txCount", blk.value("transactions").toArray().size()},
+                {"leader",
+                 hdr.value("proof_of_leadership").toObject().value("leader_key").toString()}});
+            const QString parent = hdr.value("parent_block").toString();
+            if (parent.isEmpty() || parent == zeros) break;
+            cur = parent;
+        }
+        finish(dump(QJsonObject{{"ok", true}, {"blocks", out}}));
+    });
+    return dump(QJsonObject{{"ok", true}, {"accepted", true}});
 }
 
 void LogosWalletPlugin::ensureSequencer()
@@ -519,14 +686,18 @@ void LogosWalletPlugin::startBackgroundSync()
         // look "busy", or it would disable the UI Send and make lezTransfer
         // reject the user's transfer (module calls serialize safely anyway).
         if (!m_lezOpen || m_lezBusy || m_lezSyncing) return;
-        const Reply h = lezCall(QStringLiteral("get_current_block_height"), {}, 10000);
-        const Reply l = lezCall(QStringLiteral("get_last_synced_block"), {}, 10000);
+        // These run on the module's main thread, so every blocking zone call
+        // stalls node IPC (nodeStatus/startNode) too. Keep the total per tick
+        // well under the host's ~20s reply timeout so a slow/unreachable zone
+        // can never make node operations look like "Invalid response".
+        const Reply h = lezCall(QStringLiteral("get_current_block_height"), {}, 3000);
+        const Reply l = lezCall(QStringLiteral("get_last_synced_block"), {}, 3000);
         if (!h.ok || !l.ok) return;
         const qlonglong height = h.value.toLongLong(), last = l.value.toLongLong();
         if (last >= height) return;                       // caught up
         m_lezSyncing = true;
         lezCall(QStringLiteral("sync_to_block"),
-                {QVariant::fromValue(int(qMin(last + LEZ_SYNC_CHUNK, height)))}, 120000);
+                {QVariant::fromValue(int(qMin(last + LEZ_SYNC_CHUNK, height)))}, 8000);
         lezSave();
         m_lezSyncing = false;
     });
@@ -597,8 +768,8 @@ QString LogosWalletPlugin::lezStatus()
     };
     if (m_lezOpen && !m_lezBusy && !m_lezAccount.isEmpty()) {
         // Private balance: only the wallet can compute it (viewing key).
-        out["privateBalance"] = balOf(lezCall(QStringLiteral("get_balance"), {m_lezAccount, false}, 8000));
-        out["vault"] = balOf(lezCall(QStringLiteral("get_vault_balance"), {m_lezAccount}, 8000));
+        out["privateBalance"] = balOf(lezCall(QStringLiteral("get_balance"), {m_lezAccount, false}, 4000));
+        out["vault"] = balOf(lezCall(QStringLiteral("get_vault_balance"), {m_lezAccount}, 4000));
         // Public balance: transparent state — read straight from the
         // sequencer RPC (authoritative, and immune to the wallet's local
         // get_balance going flaky after a shield).
@@ -606,7 +777,7 @@ QString LogosWalletPlugin::lezStatus()
         if (!m_lezPublicAccount.isEmpty()) {
             const QString b58 = toB58(m_lezPublicAccount);
             QByteArray reply;
-            if (curlPost(LEZ_SEQUENCER,
+            if (curlPost(sequencerUrl(),
                          ("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccountBalance\",\"params\":[\""
                           + b58.toUtf8() + "\"]}"), reply, 6)) {
                 const QJsonValue res = QJsonDocument::fromJson(reply).object().value("result");
@@ -620,6 +791,55 @@ QString LogosWalletPlugin::lezStatus()
         out["height"] = hh.ok ? hh.value.toDouble() : -1;
     }
     return dump(out);
+}
+
+QString LogosWalletPlugin::lezSequencer()
+{
+    const QString u = sequencerUrl();
+    return dump(QJsonObject{{"ok", true},
+                            {"url", u},
+                            {"default", LEZ_SEQUENCER},
+                            {"isDefault", u == LEZ_SEQUENCER}});
+}
+
+QString LogosWalletPlugin::lezSetSequencer(const QString& url)
+{
+    QString u = url.trimmed();
+    while (u.endsWith(QLatin1Char('/'))) u.chop(1);
+    const bool reset = u.isEmpty();     // empty clears the override → default
+    if (!reset && !(u.startsWith(QStringLiteral("http://"))
+                    || u.startsWith(QStringLiteral("https://"))))
+        return errJson(QStringLiteral("The URL must start with http:// or https://"));
+
+    QDir().mkpath(lezDir());
+    const QString metaPath = lezDir() + "/meta.json";
+    QJsonObject meta = metaRead(metaPath);
+    if (reset) meta.remove(QStringLiteral("sequencerUrl"));
+    else       meta[QStringLiteral("sequencerUrl")] = u;
+    metaWrite(metaPath, meta);
+
+    const QString effective = reset ? LEZ_SEQUENCER : u;
+
+    // Keep the on-disk wallet config in sync so the wallet-ffi uses the new
+    // endpoint the next time it opens the wallet (preserve the other keys).
+    const QString cfgPath = lezDir() + "/config.json";
+    if (QFile::exists(cfgPath)) {
+        QFile f(cfgPath);
+        if (f.open(QIODevice::ReadOnly)) {
+            QJsonObject cfg = QJsonDocument::fromJson(f.readAll()).object();
+            f.close();
+            cfg[QStringLiteral("sequencer_addr")] = effective;
+            if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                f.write(QJsonDocument(cfg).toJson(QJsonDocument::Compact));
+        }
+    }
+    return dump(QJsonObject{{"ok", true},
+                            {"url", effective},
+                            {"isDefault", effective == LEZ_SEQUENCER},
+                            // Live when no wallet is open yet (the next open
+                            // reads the new config); a restart is only needed
+                            // if one is already open — the zone has no close.
+                            {"needsRestart", m_lezOpen}});
 }
 
 QString LogosWalletPlugin::lezOpen()
@@ -639,7 +859,7 @@ QString LogosWalletPlugin::lezOpen()
         QDir().mkpath(dir);
         if (!QFile::exists(cfg)) {
             QFile f(cfg); f.open(QIODevice::WriteOnly);
-            f.write(QJsonDocument(QJsonObject{{"sequencer_addr", LEZ_SEQUENCER},
+            f.write(QJsonDocument(QJsonObject{{"sequencer_addr", sequencerUrl()},
                                               {"seq_poll_timeout", "30s"},
                                               {"seq_tx_poll_max_blocks", 60},
                                               {"seq_poll_max_retries", 30},
@@ -695,7 +915,9 @@ QString LogosWalletPlugin::lezOpen()
 QString LogosWalletPlugin::lezAccounts()
 {
     if (!m_lezOpen) return errJson(QStringLiteral("Open the wallet first."));
-    const Reply list = lezCall(QStringLiteral("list_accounts"), {}, 15000);
+    // Poll-path call on the module's main thread — keep timeouts short so a
+    // slow zone can't stall node IPC (see startBackgroundSync).
+    const Reply list = lezCall(QStringLiteral("list_accounts"), {}, 5000);
     if (!list.ok) return errJson("Could not list accounts: " + list.error);
 
     QJsonArray out;
@@ -714,14 +936,14 @@ QString LogosWalletPlugin::lezAccounts()
         QString balance = QStringLiteral("0");
         if (isPublic) {
             QByteArray reply;
-            if (curlPost(LEZ_SEQUENCER,
+            if (curlPost(sequencerUrl(),
                          ("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccountBalance\",\"params\":[\""
                           + toB58(id).toUtf8() + "\"]}"), reply, 6)) {
                 const QJsonValue r = QJsonDocument::fromJson(reply).object().value("result");
                 if (r.isDouble()) balance = QString::number(qulonglong(r.toDouble()));
             }
         } else {
-            const Reply b = lezCall(QStringLiteral("get_balance"), {id, false}, 8000);
+            const Reply b = lezCall(QStringLiteral("get_balance"), {id, false}, 3000);
             if (b.ok) { const QString v = b.value.toString().trimmed(); balance = v.isEmpty() ? "0" : v; }
         }
         out.append(QJsonObject{{"id", id}, {"idB58", toB58(id)},
@@ -774,7 +996,7 @@ QString LogosWalletPlugin::lezFund()
         // Fresh faucet state from the sequencer RPC (seed rotates per claim).
         m_lezStage = QStringLiteral("mining");
         QByteArray rpc;
-        curlPost(LEZ_SEQUENCER,
+        curlPost(sequencerUrl(),
                  ("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getAccount\",\"params\":[\""
                   + PINATA_B58.toUtf8() + "\"]}"), rpc, 8);
         const QJsonArray da = QJsonDocument::fromJson(rpc).object()
@@ -988,7 +1210,7 @@ QString LogosWalletPlugin::lezBridgeIn(const QString& amount)
         const QString existing = exactNote();
         if (!existing.isEmpty()) { deposit(existing); return; }
         // Mint an exact-value note via a self-transfer, then deposit it.
-        const QString st = baseSend(pk, QString::number(v));
+        const QString st = baseSend(pk, pk, QString::number(v));
         if (!QJsonDocument::fromJson(st.toUtf8()).object().value("ok").toBool()) { finish(st); return; }
         m_lezStage = QStringLiteral("waiting-note");
         auto tries = std::make_shared<int>(0);
@@ -1067,7 +1289,7 @@ QString LogosWalletPlugin::lezRestore(const QString& mnemonic)
         QDir().mkpath(dir);
         if (!QFile::exists(cfg)) {
             QFile f(cfg); f.open(QIODevice::WriteOnly);
-            f.write(QJsonDocument(QJsonObject{{"sequencer_addr", LEZ_SEQUENCER},
+            f.write(QJsonDocument(QJsonObject{{"sequencer_addr", sequencerUrl()},
                                               {"seq_poll_timeout", "30s"},
                                               {"seq_tx_poll_max_blocks", 60},
                                               {"seq_poll_max_retries", 30},

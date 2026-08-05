@@ -27,12 +27,25 @@ public:
     Q_INVOKABLE virtual QString stopNode() = 0;
     // {"ok","accounts":[{"role","address","balance"}]}
     Q_INVOKABLE virtual QString baseAccounts() = 0;
-    // Base-chain transfer. {"ok","tx","error"}
-    Q_INVOKABLE virtual QString baseSend(const QString& toAddress,
+    // Base-chain transfer. fromAddress names the paying account (one of the
+    // keystore public keys from baseAccounts); empty = the Main/LeaderFunding
+    // key. Change returns to the sender. {"ok","tx","error"}
+    Q_INVOKABLE virtual QString baseSend(const QString& fromAddress,
+                                         const QString& toAddress,
                                          const QString& amount) = 0;
     // Inscribe text on the base chain (built-in sequencer). Deferred →
     // inscribeFinished with {"ok","output"|"error"}.
     Q_INVOKABLE virtual QString inscribe(const QString& text) = 0;
+    // Scan recent base-chain blocks (walking back from the tip) for text
+    // inscriptions — anyone's, not just this wallet's. A text inscription is a
+    // JSON body {"tx_uuid","text"}; LEZ zone-data inscriptions aren't and are
+    // skipped. Deferred → recentInscriptionsFinished with {"ok","inscriptions":
+    // [{"text","signer","channel","slot","tx"}]} (newest first) | {"error"}.
+    Q_INVOKABLE virtual QString recentInscriptions() = 0;
+    // Recent base-chain blocks, walking back from the tip (a mini explorer).
+    // Deferred → recentBlocksFinished with {"ok","blocks":[{"height","slot",
+    // "id","txCount","leader"}]} (newest first) | {"error"}.
+    Q_INVOKABLE virtual QString recentBlocks() = 0;
 
     // ── LEZ (execution zone) ─────────────────────────────────────────
     // {"ready","busy","account","publicAccount","privateBalance",
@@ -74,6 +87,17 @@ public:
     Q_INVOKABLE virtual QString lezBridgeIn(const QString& amount) = 0;
     // Claim vault → private balance. Deferred → lezBridgeFinished.
     Q_INVOKABLE virtual QString lezClaimVault(const QString& amount) = 0;
+
+    // ── Sequencer endpoint ───────────────────────────────────────────
+    // The LEZ testnet sequencer this wallet connects to. Configurable so a
+    // node outage or a self-hosted sequencer can be worked around without a
+    // rebuild. {"ok","url","default","isDefault"}.
+    Q_INVOKABLE virtual QString lezSequencer() = 0;
+    // Persist a new sequencer URL (empty clears the override → built-in
+    // default). Rewrites the on-disk wallet config so the ffi picks it up on
+    // the next open. {"ok","url","isDefault","needsRestart"} — needsRestart is
+    // true only when a wallet is already open (the zone module has no close).
+    Q_INVOKABLE virtual QString lezSetSequencer(const QString& url) = 0;
 
     // ── Danger zone ──────────────────────────────────────────────────
     // Delete the on-disk LEZ wallet (storage + meta) after stopping the

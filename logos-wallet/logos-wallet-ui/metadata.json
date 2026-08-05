@@ -1,13 +1,16 @@
 {
-  "name": "logos_wallet_ui",
+  "name": "Persona",
+  "displayName": "Persona",
   "version": "0.1.0",
   "type": "ui_qml",
   "category": "wallet",
-  "description": "Logos Wallet — Bedrock base chain + private LEZ payments in one place",
+  "description": "Persona — Bedrock base chain + private LEZ payments in one place",
   "view": "Main.qml",
   "icon": "icons/logos-wallet.png",
-  "dependencies": ["logos_execution_zone", "logos_wallet"],
-
+  "dependencies": [
+    "logos_execution_zone",
+    "persona_core"
+  ],
   "nix": {
     "packages": {
       "build": [],

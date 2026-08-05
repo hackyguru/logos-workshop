@@ -1,4 +1,4 @@
-// Logos Wallet — Bedrock (base chain) + LEZ (private execution zone) in one
+// Persona — Bedrock (base chain) + LEZ (private execution zone) in one
 // tab bar. QML frontend for the logos_wallet core, which owns the node
 // daemon and drives the version-matched logos_execution_zone module for all
 // LEZ writes. All calls go through callModuleAsync; slow ops return
@@ -25,6 +25,8 @@ Rectangle {
 
     // ── Bedrock state ────────────────────────────────────────────────
     property int nodeStatus: 0             // 0 off, 1 setting up, 3 running
+    property bool baseStatusKnown: false   // first nodeStatus reply has landed
+    property int _baseMisses: 0            // consecutive "not running" polls
     property string nodeStage: ""
     property string chainMode: ""
     property double chainHeight: 0
@@ -32,11 +34,18 @@ Rectangle {
     property int nPeers: -1
     property int nConnections: -1
     property string peerId: ""
+    property string httpAddr: ""           // node's local HTTP API address
+    property string nodeVersion: ""        // node binary version
     property var baseAccounts: []
     property string lastSendTx: ""
     property bool sendBusy: false
     property string lastInscribe: ""
     property bool inscribeBusy: false
+    property var inscFeed: []                 // recent text inscriptions (anyone's)
+    property bool inscFeedLoading: false
+    property bool inscFeedLoaded: false
+    property var recentBlocksList: []         // recent base-chain blocks
+    property bool blocksLoading: false
 
     // ── LEZ state ────────────────────────────────────────────────────
     property bool lezReady: false
@@ -58,9 +67,21 @@ Rectangle {
     property bool lezStatusKnown: false     // first lezStatus reply has landed
     property bool lezAutoOpened: false       // auto-open attempted this session
     property bool lezNeedsRestart: false      // reset done; old wallet still in memory
+    // Configurable LEZ sequencer endpoint (settings dialog).
+    property string lezSeqUrl: ""             // current effective sequencer URL
+    property string lezSeqDefault: ""         // built-in default (for "Reset")
+    property bool lezSeqIsDefault: true       // current == default
+    property bool lezSeqBusy: false           // save in flight
+    // First-run onboarding (create-with-seed / import) for the private wallet.
+    property bool onbActive: false            // onboarding overlay is showing
+    property int onbStep: 0                    // 0 choose · 1 seed · 2 verify · 3 import
+    property var onbVerifyIdx: []             // word positions to confirm at verify
+    property bool onbSaved: false             // user ticked "I saved my phrase"
+    property bool onbPreview: false           // dev: walk the flow without touching the wallet
     property bool baseAccountsLoaded: false   // first baseAccounts reply landed
     property bool lezAccountsLoaded: false    // first lezAccounts reply landed
     property string _lezAccountsJson: ""       // change-guard for the accounts list
+    property string _baseAccountsJson: ""      // change-guard for base accounts
 
     property string lastError: ""
     property string copied: ""
@@ -72,7 +93,7 @@ Rectangle {
             lastError = "Logos bridge unavailable.";
             return;
         }
-        logos.callModuleAsync("logos_wallet", method, args, function (raw) {
+        logos.callModuleAsync("persona_core", method, args, function (raw) {
             cb(parse(raw));
         });
     }
@@ -165,10 +186,10 @@ Rectangle {
             baseAccountsLoaded = false;
         });
     }
-    function baseSend(to, amt) {
+    function baseSend(from, to, amt) {
         lastError = "";
         sendBusy = true;
-        call("baseSend", [to, amt], function (r) {
+        call("baseSend", [from, to, amt], function (r) {
             sendBusy = false;
             if (!r.ok) {
                 fail(r.error);
@@ -188,6 +209,28 @@ Rectangle {
                 inscribeBusy = false;
                 fail(r.error);
             }
+        });
+    }
+    // Load the recent-inscriptions feed (anyone's text inscriptions). Result
+    // arrives via the recentInscriptionsFinished event.
+    function loadInscFeed() {
+        if (inscFeedLoading || nodeStatus !== 3)
+            return;
+        inscFeedLoading = true;
+        call("recentInscriptions", [], function (r) {
+            if (!r.ok || (r.accepted === false && !Array.isArray(r.inscriptions)))
+                inscFeedLoading = false;
+        });
+    }
+    // Load the recent-blocks list (mini explorer). Result arrives via the
+    // recentBlocksFinished event.
+    function loadRecentBlocks() {
+        if (blocksLoading || nodeStatus !== 3)
+            return;
+        blocksLoading = true;
+        call("recentBlocks", [], function (r) {
+            if (!r.ok || (r.accepted === false && !Array.isArray(r.blocks)))
+                blocksLoading = false;
         });
     }
 
@@ -242,6 +285,75 @@ Rectangle {
             return "Select account…";
         return (a.isPublic ? "Public" : "Private") + " · " + shortHex(a.idB58) + " · " + fmt(a.balance) + " tokens";
     }
+    // What each base-chain keystore role is. These are the node's protocol
+    // keys — only LeaderFunding ("Main") is a general spending account; the
+    // rest have specific node jobs and shouldn't normally be spent from.
+    function baseRoleInfo(role) {
+        switch (role) {
+        case "LeaderFunding":
+            return {
+                name: "Main",
+                desc: "Funds block production — your everyday spending account.",
+                spendable: true
+            };
+        case "Stake":
+            return {
+                name: "Stake",
+                desc: "Holds your node's stake. Spending from it can unstake your node.",
+                spendable: false
+            };
+        case "SdpFunding":
+            return {
+                name: "SDP funding",
+                desc: "Funds the node's service-declaration operations.",
+                spendable: false
+            };
+        case "NetworkSwarm":
+            return {
+                name: "Network",
+                desc: "Your node's network identity key.",
+                spendable: false
+            };
+        case "BlendSigning":
+            return {
+                name: "Blend signing",
+                desc: "Signs for the Blend privacy layer.",
+                spendable: false
+            };
+        case "BlendZk":
+            return {
+                name: "Blend ZK",
+                desc: "The Blend privacy layer's zero-knowledge key.",
+                spendable: false
+            };
+        case "VaucherMaster":
+            return {
+                name: "Voucher master",
+                desc: "Master key for the node's vouchers.",
+                spendable: false
+            };
+        default:
+            return {
+                name: role,
+                desc: "A node protocol key — not a general spending account.",
+                spendable: false
+            };
+        }
+    }
+    // Label for a base-chain account in the sender picker.
+    function baseFromLabel(a) {
+        if (!a)
+            return "Select account…";
+        var info = baseRoleInfo(a.role);
+        return info.name + (info.spendable ? "" : " · node key") + " · " + shortHex(a.address) + " · " + fmt(a.balance) + " tokens";
+    }
+    // Index of the Main (LeaderFunding) account — the default sender.
+    function baseMainIndex() {
+        for (var i = 0; i < baseAccounts.length; i++)
+            if (baseAccounts[i].role === "LeaderFunding")
+                return i;
+        return baseAccounts.length > 0 ? 0 : -1;
+    }
     // A private recipient is named by a receiving address (lezpriv1…), which
     // encodes their shielded keys. A public recipient is a plain account id.
     function validRecipient(text, destPublic) {
@@ -295,7 +407,14 @@ Rectangle {
         call("nodeStatus", [], function (r) {
             if (!r.ok && r.running === undefined)
                 return;
+            // A real status reply landed — safe to render the off/welcome view.
+            baseStatusKnown = true;
+            if (r.httpAddr !== undefined)
+                httpAddr = String(r.httpAddr);
+            if (r.nodeVersion !== undefined)
+                nodeVersion = String(r.nodeVersion);
             if (r.running) {
+                _baseMisses = 0;
                 if (nodeStatus !== 1)
                     nodeStatus = 3;
                 chainMode = String(r.mode || "");
@@ -304,9 +423,15 @@ Rectangle {
                 peerId = String(r.peerId || "");
                 nPeers = Number(r.nPeers);
                 nConnections = Number(r.nConnections);
+                if (!inscFeedLoaded && !inscFeedLoading)
+                    loadInscFeed();
             } else if (nodeStatus === 3) {
-                nodeStatus = 0;
-                chainMode = "";
+                // Don't drop to the welcome screen on one transient miss (a
+                // slow probe while the node is fine) — only after a few.
+                if (++_baseMisses >= 3) {
+                    nodeStatus = 0;
+                    chainMode = "";
+                }
             } else if (nodeStatus === 1 && !r.setupBusy && !r.running && r.setupError) {
                 nodeStatus = 0;
                 fail(String(r.setupError));
@@ -315,7 +440,13 @@ Rectangle {
         if (nodeStatus === 3)
             call("baseAccounts", [], function (r) {
                 if (r.ok && Array.isArray(r.accounts)) {
-                    baseAccounts = r.accounts;
+                    // Only reassign when the set actually changed — a fresh
+                    // array every poll resets the sender picker's selection.
+                    var j = JSON.stringify(r.accounts);
+                    if (j !== _baseAccountsJson) {
+                        _baseAccountsJson = j;
+                        baseAccounts = r.accounts;
+                    }
                     baseAccountsLoaded = true;
                 }
             });
@@ -334,6 +465,9 @@ Rectangle {
                 lezAutoOpened = true;
                 lezOpen();
             }
+            // First run — no wallet on disk yet → gate the app behind onboarding.
+            if (!lezHasWallet && !lezReady && !lezNeedsRestart && !onbActive)
+                onbActive = true;
             lezAccountB58 = String(r.accountB58 || "");
             lezAccountHex = String(r.account || "");
             lezPublicAccountB58 = String(r.publicAccountB58 || "");
@@ -405,6 +539,97 @@ Rectangle {
         });
     }
 
+    // ── Sequencer settings ───────────────────────────────────────────
+    // Load the current sequencer URL into the dialog fields.
+    function loadSeq() {
+        call("lezSequencer", [], function (r) {
+            if (!r.ok)
+                return;
+            root.lezSeqUrl = r.url || "";
+            root.lezSeqDefault = r.default || "";
+            root.lezSeqIsDefault = !!r.isDefault;
+            // Fill the dialog on open — but never overwrite what's being typed.
+            if (seqOverlay.visible && !seqUrlField.activeFocus)
+                seqUrlField.text = root.lezSeqUrl;
+        });
+    }
+    // Persist a new sequencer URL (empty string resets to the built-in default).
+    function saveSeq(url) {
+        lastError = "";
+        lezMsg = "";
+        lezSeqBusy = true;
+        call("lezSetSequencer", [url.trim()], function (r) {
+            lezSeqBusy = false;
+            if (!r.ok) {
+                fail(r.error);
+                return;
+            }
+            root.lezSeqUrl = r.url || "";
+            root.lezSeqIsDefault = !!r.isDefault;
+            seqOverlay.visible = false;
+            if (r.needsRestart) {
+                root.lezMsg = "Sequencer saved. Restart Basecamp to connect through it.";
+            } else {
+                root.lezMsg = "Sequencer saved.";
+                // No wallet open yet → the next open reads the new endpoint,
+                // so (re)connect live without a restart.
+                if (!root.lezReady && root.lezHasWallet)
+                    root.lezOpen();
+            }
+            root.refreshLez();
+        });
+    }
+
+    // ── Onboarding helpers ───────────────────────────────────────────
+    // Kick off wallet creation; lezOpenFinished advances us to the seed step.
+    function onbCreate() {
+        onbSaved = false;
+        lezOpen();
+    }
+    // Dev preview: walk the whole flow without creating/restoring anything.
+    function onbPreviewStart() {
+        onbPreview = true;
+        onbSaved = false;
+        onbStep = 0;
+        onbActive = true;
+    }
+    function onbPreviewSeed() {
+        lezMnemonic = "abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual";
+        onbSaved = false;
+        onbStep = 1;
+    }
+    // Move from "here's your phrase" to the confirm step, choosing 3 random
+    // word positions the user must fill back in.
+    function onbToVerify() {
+        var words = root.lezMnemonic.trim().split(/\s+/);
+        var idx = [];
+        while (idx.length < 3 && words.length >= 3) {
+            var r = Math.floor(Math.random() * words.length);
+            if (idx.indexOf(r) === -1)
+                idx.push(r);
+        }
+        idx.sort(function (a, b) {
+            return a - b;
+        });
+        onbVerifyIdx = idx;
+        onbStep = 2;
+    }
+    function onbVerifyOk(fields) {
+        var words = root.lezMnemonic.trim().split(/\s+/);
+        for (var i = 0; i < onbVerifyIdx.length; i++)
+            if ((fields[i] || "").trim().toLowerCase() !== (words[onbVerifyIdx[i]] || "").toLowerCase())
+                return false;
+        return true;
+    }
+    // Finish onboarding: wipe the phrase from memory and drop into the app.
+    function onbFinish() {
+        lezMnemonic = "";
+        onbActive = false;
+        onbStep = 0;
+        onbSaved = false;
+        onbPreview = false;
+    }
+
     Timer {
         interval: 2500
         running: true
@@ -424,7 +649,7 @@ Rectangle {
     Connections {
         target: (typeof logos !== "undefined") ? logos : null
         function onModuleEventReceived(m, e, d) {
-            if (m !== "logos_wallet")
+            if (m !== "persona_core")
                 return;
             var r;
             try {
@@ -445,8 +670,18 @@ Rectangle {
                 if (r && r.ok) {
                     lastInscribe = "Inscribed on the chain forever ✓ " + (r.tip ? shortHex(String(r.tip)) : "");
                     inscribeField.text = "";
+                    loadInscFeed();
                 } else
                     fail(r ? r.error : "The inscription failed.");
+            } else if (e === "recentInscriptionsFinished") {
+                inscFeedLoading = false;
+                inscFeedLoaded = true;
+                if (r && r.ok && Array.isArray(r.inscriptions))
+                    inscFeed = r.inscriptions;
+            } else if (e === "recentBlocksFinished") {
+                blocksLoading = false;
+                if (r && r.ok && Array.isArray(r.blocks))
+                    recentBlocksList = r.blocks;
             } else if (e === "lezOpenFinished") {
                 lezBusy = false;
                 if (r && r.ok) {
@@ -454,6 +689,9 @@ Rectangle {
                     lezAccountB58 = String(r.accountB58 || "");
                     if (r.mnemonic && r.mnemonic.length)
                         lezMnemonic = String(r.mnemonic);
+                    // Freshly created during onboarding → show the phrase.
+                    if (onbActive && r.mnemonic && r.mnemonic.length)
+                        onbStep = 1;
                     refreshLez();
                 } else
                     fail(r ? r.error : "Could not open your private wallet.");
@@ -498,6 +736,9 @@ Rectangle {
                     lezHasWallet = true;
                     lezNeedsRestart = false;
                     lezMsg = "Wallet restored ✓ — balances reappear as it re-syncs.";
+                    // Imported during onboarding → drop straight into the app.
+                    if (onbActive)
+                        onbFinish();
                     refreshLez();
                 } else
                     fail(r ? r.error : "The restore failed.");
@@ -506,12 +747,13 @@ Rectangle {
     }
     Component.onCompleted: {
         if (typeof logos !== "undefined" && logos.onModuleEvent) {
-            var evs = ["nodeSetupFinished", "inscribeFinished", "lezOpenFinished", "lezAccountCreated", "lezFundFinished", "lezTransferFinished", "lezBridgeFinished", "lezRestoreFinished"];
+            var evs = ["nodeSetupFinished", "inscribeFinished", "recentInscriptionsFinished", "recentBlocksFinished", "lezOpenFinished", "lezAccountCreated", "lezFundFinished", "lezTransferFinished", "lezBridgeFinished", "lezRestoreFinished"];
             for (var i = 0; i < evs.length; i++)
-                logos.onModuleEvent("logos_wallet", evs[i]);
+                logos.onModuleEvent("persona_core", evs[i]);
         }
         refreshBase();
         refreshLez();
+        loadSeq();
     }
 
     // ── Display helpers ──────────────────────────────────────────────
@@ -663,6 +905,14 @@ Rectangle {
         implicitHeight: 36
         implicitWidth: btnLabel.implicitWidth + 32
         readonly property bool isActive: btnMa.pressed || btn.hovered
+        // springy press feedback
+        scale: (btnMa.pressed && btn.enabled) ? 0.96 : 1.0
+        Behavior on scale {
+            NumberAnimation {
+                duration: 90
+                easing.type: Easing.OutQuad
+            }
+        }
         Tip {
             text: btn.tip
             visible: btn.hovered && btn.tip.length > 0
@@ -723,6 +973,13 @@ Rectangle {
         hoverEnabled: true
         implicitHeight: 26
         implicitWidth: mbLabel.implicitWidth + 20
+        scale: mbMa.pressed ? 0.94 : 1.0
+        Behavior on scale {
+            NumberAnimation {
+                duration: 90
+                easing.type: Easing.OutQuad
+            }
+        }
         Tip {
             text: mb.tip
             visible: mb.hovered && mb.tip.length > 0
@@ -732,6 +989,11 @@ Rectangle {
             color: mb.hovered ? Theme.palette.backgroundMuted : "transparent"
             border.width: 1
             border.color: mb.hovered ? Theme.palette.overlayOrange : Theme.palette.borderSubtle
+            Behavior on color {
+                ColorAnimation {
+                    duration: 120
+                }
+            }
             Behavior on border.color {
                 ColorAnimation {
                     duration: 120
@@ -746,8 +1008,14 @@ Rectangle {
             font.pixelSize: 11
             font.weight: Theme.typography.weightMedium
             color: mb.hovered ? Theme.palette.text : Theme.palette.textSecondary
+            Behavior on color {
+                ColorAnimation {
+                    duration: 120
+                }
+            }
         }
         MouseArea {
+            id: mbMa
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
             onClicked: mb.clicked()
@@ -843,6 +1111,35 @@ Rectangle {
                 font.pixelSize: Theme.typography.primaryText
                 elide: Text.ElideRight
             }
+        }
+    }
+
+    // Label ▸ value row for the node-info sheet; copyKey adds a Copy button.
+    component InfoRow: RowLayout {
+        property string k: ""
+        property string v: ""
+        property string copyKey: ""
+        Layout.fillWidth: true
+        spacing: Theme.spacing.medium
+        LogosText {
+            Layout.preferredWidth: 118
+            text: k
+            color: Theme.palette.textTertiary
+            font.pixelSize: 10
+            font.weight: Theme.typography.weightMedium
+            font.letterSpacing: 0.8
+            font.capitalization: Font.AllUppercase
+        }
+        Mono {
+            Layout.fillWidth: true
+            text: v.length ? v : "—"
+            horizontalAlignment: Text.AlignRight
+            elide: Text.ElideRight
+        }
+        MiniButton {
+            visible: copyKey.length > 0
+            label: root.copied === copyKey ? "✓ Copied" : "Copy"
+            onClicked: root.copy(v, copyKey)
         }
     }
 
@@ -1222,6 +1519,13 @@ Rectangle {
                 sourceSize: Qt.size(128, 128)
                 smooth: true
             }
+            LogosText {
+                text: "Persona"
+                color: Theme.palette.text
+                font.pixelSize: Theme.typography.subtitleText
+                font.weight: Theme.typography.weightBold
+                Layout.rightMargin: Theme.spacing.small
+            }
             LogosTabBar {
                 id: tabBar
                 Layout.fillWidth: true
@@ -1231,8 +1535,14 @@ Rectangle {
                     text: "Base chain"
                 }
                 LogosTabButton {
-                    text: "Private (LEZ)"
+                    text: "LEZ (Zone)"
                 }
+            }
+            // TEMP: preview the first-run onboarding without touching the wallet.
+            MiniButton {
+                label: "Preview onboarding"
+                tip: "Walk through the first-run setup flow (nothing is created or changed)."
+                onClicked: root.onbPreviewStart()
             }
         }
 
@@ -1297,6 +1607,20 @@ Rectangle {
         Card {
             anchors.centerIn: parent
             width: Math.min(parent.width - Theme.spacing.xxlarge * 2, 470)
+            opacity: resetOverlay.visible ? 1 : 0
+            scale: resetOverlay.visible ? 1 : 0.95
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 170
+                    easing.type: Easing.OutCubic
+                }
+            }
+            Behavior on scale {
+                NumberAnimation {
+                    duration: 200
+                    easing.type: Easing.OutCubic
+                }
+            }
             title: "Delete private wallet"
             LogosText {
                 Layout.fillWidth: true
@@ -1338,6 +1662,796 @@ Rectangle {
         }
     }
 
+    // ── Sequencer settings dialog ────────────────────────────────────
+    Rectangle {
+        id: seqOverlay
+        objectName: "seqOverlay"
+        function open() {
+            seqUrlField.text = root.lezSeqUrl;
+            root.loadSeq();
+            visible = true;
+        }
+        visible: false
+        anchors.fill: parent
+        z: 100
+        color: Qt.rgba(0, 0, 0, 0.62)
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            onClicked: seqOverlay.visible = false
+        }
+        Card {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - Theme.spacing.xxlarge * 2, 520)
+            opacity: seqOverlay.visible ? 1 : 0
+            scale: seqOverlay.visible ? 1 : 0.95
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 170
+                    easing.type: Easing.OutCubic
+                }
+            }
+            Behavior on scale {
+                NumberAnimation {
+                    duration: 200
+                    easing.type: Easing.OutCubic
+                }
+            }
+            // keep clicks inside the card from dismissing the dialog
+            MouseArea {
+                anchors.fill: parent
+                onClicked: {}
+            }
+            title: "LEZ sequencer"
+            LogosText {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                color: Theme.palette.textSecondary
+                font.pixelSize: Theme.typography.primaryText
+                text: "The private wallet connects to this sequencer to sync, read balances and submit transactions. Change it to route around a testnet outage or to use your own sequencer."
+            }
+            LogosText {
+                text: "Sequencer URL"
+                color: Theme.palette.textSecondary
+                font.pixelSize: Theme.typography.secondaryText
+            }
+            LogosTextField {
+                id: seqUrlField
+                Layout.fillWidth: true
+                placeholderText: root.lezSeqDefault.length ? root.lezSeqDefault : "https://…"
+                enabled: !root.lezSeqBusy
+            }
+            LogosText {
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                visible: root.lezReady
+                color: Theme.palette.warning
+                font.pixelSize: Theme.typography.secondaryText
+                text: "A wallet is already connected — Basecamp must restart for a new sequencer to take effect."
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacing.small
+                MiniButton {
+                    label: "Reset to default"
+                    enabled: !root.lezSeqBusy && !root.lezSeqIsDefault
+                    tip: root.lezSeqDefault
+                    onClicked: root.saveSeq("")
+                }
+                Item {
+                    Layout.fillWidth: true
+                }
+                ActionButton {
+                    text: "Cancel"
+                    enabled: !root.lezSeqBusy
+                    onClicked: seqOverlay.visible = false
+                }
+                ActionButton {
+                    accent: true
+                    text: root.lezSeqBusy ? "Saving…" : "Save"
+                    enabled: !root.lezSeqBusy && seqUrlField.text.trim().length > 0 && seqUrlField.text.trim() !== root.lezSeqUrl
+                    onClicked: root.saveSeq(seqUrlField.text)
+                }
+            }
+        }
+    }
+
+    // ── Node info sheet ──────────────────────────────────────────────
+    Rectangle {
+        id: nodeInfoOverlay
+        objectName: "nodeInfoOverlay"
+        function open() {
+            visible = true;
+        }
+        visible: false
+        anchors.fill: parent
+        z: 100
+        color: Qt.rgba(0, 0, 0, 0.62)
+        // swallow clicks behind the dialog
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+        }
+        Card {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - Theme.spacing.xxlarge * 2, 480)
+            opacity: nodeInfoOverlay.visible ? 1 : 0
+            scale: nodeInfoOverlay.visible ? 1 : 0.95
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 170
+                    easing.type: Easing.OutCubic
+                }
+            }
+            Behavior on scale {
+                NumberAnimation {
+                    duration: 200
+                    easing.type: Easing.OutCubic
+                }
+            }
+            title: "Node info"
+            tip: "Live configuration and status of your base-chain node."
+            InfoRow {
+                k: "Status"
+                v: root.chainMode === "Online" ? "Online" : (root.chainMode.length ? "Syncing (" + root.chainMode + ")" : "Starting…")
+            }
+            InfoRow {
+                k: "Node version"
+                v: root.nodeVersion
+            }
+            InfoRow {
+                k: "HTTP API"
+                v: root.httpAddr
+                copyKey: "nodeHttp"
+            }
+            InfoRow {
+                k: "Data folder"
+                v: "~/.logos-wallet"
+                copyKey: "nodeDir"
+            }
+            Hairline {}
+            InfoRow {
+                k: "Block height"
+                v: root.fmt(root.chainHeight)
+            }
+            InfoRow {
+                k: "Slot"
+                v: root.fmt(root.chainSlot)
+            }
+            InfoRow {
+                k: "Peers"
+                v: root.nPeers >= 0 ? String(root.nPeers) : "—"
+            }
+            InfoRow {
+                k: "Connections"
+                v: root.nConnections >= 0 ? String(root.nConnections) : "—"
+            }
+            Hairline {}
+            LogosText {
+                text: "PEER ID"
+                color: Theme.palette.textTertiary
+                font.pixelSize: 10
+                font.weight: Theme.typography.weightMedium
+                font.letterSpacing: 0.8
+                font.capitalization: Font.AllUppercase
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacing.medium
+                Mono {
+                    Layout.fillWidth: true
+                    text: root.peerId.length ? root.peerId : "—"
+                    wrapMode: Text.WrapAnywhere
+                    font.pixelSize: 11
+                    color: Theme.palette.textSecondary
+                }
+                MiniButton {
+                    visible: root.peerId.length > 0
+                    label: root.copied === "nodePeer" ? "✓ Copied" : "Copy"
+                    onClicked: root.copy(root.peerId, "nodePeer")
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item {
+                    Layout.fillWidth: true
+                }
+                ActionButton {
+                    text: "Close"
+                    onClicked: nodeInfoOverlay.visible = false
+                }
+            }
+        }
+    }
+
+    // ── Recent blocks sheet ──────────────────────────────────────────
+    Rectangle {
+        id: blocksOverlay
+        objectName: "blocksOverlay"
+        function open() {
+            visible = true;
+        }
+        visible: false
+        anchors.fill: parent
+        z: 100
+        color: Qt.rgba(0, 0, 0, 0.62)
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+        }
+        Card {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - Theme.spacing.xxlarge * 2, 500)
+            opacity: blocksOverlay.visible ? 1 : 0
+            scale: blocksOverlay.visible ? 1 : 0.95
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 170
+                    easing.type: Easing.OutCubic
+                }
+            }
+            Behavior on scale {
+                NumberAnimation {
+                    duration: 200
+                    easing.type: Easing.OutCubic
+                }
+            }
+            title: "Recent blocks"
+            tip: "The latest blocks on the base chain, newest first — height, slot, block hash and how many transactions each carries."
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.spacing.small
+                LogosText {
+                    Layout.fillWidth: true
+                    text: root.chainMode === "Online" ? "Chain tip #" + root.fmt(root.chainHeight) : "Syncing…"
+                    color: Theme.palette.textSecondary
+                    font.pixelSize: Theme.typography.secondaryText
+                }
+                MiniButton {
+                    label: root.blocksLoading ? "Loading…" : "Refresh"
+                    tip: "Re-read the latest blocks from your node."
+                    onClicked: root.loadRecentBlocks()
+                }
+            }
+            ColumnLayout {
+                visible: root.blocksLoading && root.recentBlocksList.length === 0
+                Layout.fillWidth: true
+                spacing: Theme.spacing.small
+                SkeletonRow {}
+                SkeletonRow {}
+                SkeletonRow {}
+            }
+            ListView {
+                id: blocksList
+                add: Transition {
+                    NumberAnimation {
+                        property: "opacity"
+                        from: 0
+                        to: 1
+                        duration: 220
+                        easing.type: Easing.OutCubic
+                    }
+                }
+                displaced: Transition {
+                    NumberAnimation {
+                        properties: "x,y"
+                        duration: 200
+                        easing.type: Easing.OutCubic
+                    }
+                }
+                remove: Transition {
+                    NumberAnimation {
+                        property: "opacity"
+                        to: 0
+                        duration: 150
+                    }
+                }
+                visible: root.recentBlocksList.length > 0
+                Layout.fillWidth: true
+                Layout.preferredHeight: 380
+                clip: true
+                spacing: Theme.spacing.small
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: LogosScrollBar {
+                    parent: blocksList.parent
+                    anchors.top: blocksList.top
+                    anchors.bottom: blocksList.bottom
+                    anchors.left: blocksList.right
+                    anchors.leftMargin: 4
+                }
+                model: root.recentBlocksList
+                delegate: Rectangle {
+                    width: ListView.view.width
+                    radius: Theme.spacing.radiusLarge
+                    color: Theme.palette.backgroundSecondary
+                    implicitHeight: 52
+                    RowLayout {
+                        anchors {
+                            left: parent.left
+                            right: parent.right
+                            verticalCenter: parent.verticalCenter
+                            leftMargin: Theme.spacing.medium
+                            rightMargin: Theme.spacing.medium
+                        }
+                        spacing: Theme.spacing.medium
+                        ColumnLayout {
+                            spacing: 1
+                            LogosText {
+                                text: "#" + root.fmt(modelData.height)
+                                color: Theme.palette.text
+                                font.pixelSize: Theme.typography.primaryText
+                                font.weight: Theme.typography.weightBold
+                            }
+                            LogosText {
+                                text: "slot " + root.fmt(modelData.slot)
+                                color: Theme.palette.textTertiary
+                                font.pixelSize: 10
+                            }
+                        }
+                        Mono {
+                            Layout.fillWidth: true
+                            text: root.shortHex(String(modelData.id))
+                            color: Theme.palette.textSecondary
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideMiddle
+                        }
+                        Chip {
+                            label: modelData.txCount > 0 ? (modelData.txCount + (modelData.txCount === 1 ? " tx" : " txs")) : "empty"
+                            tint: modelData.txCount > 0 ? Theme.palette.primary : Theme.palette.textTertiary
+                        }
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item {
+                    Layout.fillWidth: true
+                }
+                ActionButton {
+                    text: "Close"
+                    onClicked: blocksOverlay.visible = false
+                }
+            }
+        }
+    }
+
+    // ── First-run onboarding: create-with-seed or restore ────────────
+    // Full-screen gate shown until the private wallet exists. Base-chain
+    // node setup stays separate (its keys aren't seed-derived).
+    Rectangle {
+        id: onbOverlay
+        objectName: "onbOverlay"
+        visible: root.onbActive
+        anchors.fill: parent
+        z: 200
+        color: Theme.palette.background
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+        }
+        // faint brand wash from the top
+        Rectangle {
+            anchors.fill: parent
+            gradient: Gradient {
+                GradientStop {
+                    position: 0.0
+                    color: Theme.colors.getColor(Theme.palette.primary, 0.06)
+                }
+                GradientStop {
+                    position: 0.5
+                    color: "transparent"
+                }
+            }
+        }
+        ColumnLayout {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - Theme.spacing.xxlarge * 2, 560)
+            spacing: Theme.spacing.large
+            opacity: onbOverlay.visible ? 1 : 0
+            scale: onbOverlay.visible ? 1 : 0.98
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 240
+                    easing.type: Easing.OutCubic
+                }
+            }
+            Behavior on scale {
+                NumberAnimation {
+                    duration: 260
+                    easing.type: Easing.OutCubic
+                }
+            }
+
+            // Brand header — every step
+            RowLayout {
+                Layout.alignment: Qt.AlignHCenter
+                spacing: Theme.spacing.medium
+                Image {
+                    source: "icons/logos-wallet.png"
+                    Layout.preferredWidth: 44
+                    Layout.preferredHeight: 44
+                    sourceSize: Qt.size(128, 128)
+                    smooth: true
+                }
+                LogosText {
+                    text: "Persona"
+                    color: Theme.palette.text
+                    font.pixelSize: Theme.typography.panelTitleText
+                    font.weight: Theme.typography.weightBold
+                }
+            }
+
+            // Step dots — fixed under the header so they never move as the
+            // card height changes per step.
+            RowLayout {
+                Layout.alignment: Qt.AlignHCenter
+                Layout.topMargin: Theme.spacing.tiny
+                spacing: Theme.spacing.small
+                visible: root.onbStep <= 2
+                Repeater {
+                    model: 3
+                    delegate: Rectangle {
+                        implicitWidth: root.onbStep === index ? 22 : 8
+                        implicitHeight: 8
+                        radius: 4
+                        color: root.onbStep === index ? Theme.palette.primary : Theme.palette.borderSubtle
+                        Behavior on implicitWidth {
+                            NumberAnimation {
+                                duration: 200
+                                easing.type: Easing.OutCubic
+                            }
+                        }
+                        Behavior on color {
+                            ColorAnimation {
+                                duration: 200
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Create-flow carousel: welcome → phrase → confirm ──
+            SwipeView {
+                id: onbSwipe
+                Layout.fillWidth: true
+                // Fixed to the 24-word recovery-phrase step (the tallest). A
+                // constant height keeps the whole centered block — and the dots
+                // — from shifting as you move between steps.
+                Layout.preferredHeight: 466
+                currentIndex: Math.min(root.onbStep, 2)
+                interactive: false
+                clip: true
+                visible: root.onbStep <= 2
+                onCurrentIndexChanged: if (currentIndex === 2) {
+                    vfA.text = "";
+                    vfB.text = "";
+                    vfC.text = "";
+                }
+                Item {
+                    implicitHeight: card0.implicitHeight
+                    Card {
+                        id: card0
+                        anchors.fill: parent
+                        glow: true
+                        Item {
+                            Layout.fillHeight: true
+                        }
+                        LogosText {
+                            text: "Set up your wallet"
+                            color: Theme.palette.text
+                            font.pixelSize: Theme.typography.subtitleText
+                            font.weight: Theme.typography.weightBold
+                        }
+                        LogosText {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: Theme.palette.textSecondary
+                            font.pixelSize: Theme.typography.primaryText
+                            text: "Your private wallet on the Logos network — where your hidden balance lives."
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            Layout.topMargin: Theme.spacing.tiny
+                            Layout.bottomMargin: Theme.spacing.tiny
+                            spacing: Theme.spacing.medium
+                            Repeater {
+                                model: ["Amounts and participants stay private — hidden from everyone.", "You hold the keys — no account, no sign-up.", "One recovery phrase backs your whole wallet up."]
+                                delegate: RowLayout {
+                                    required property string modelData
+                                    Layout.fillWidth: true
+                                    spacing: Theme.spacing.small
+                                    Rectangle {
+                                        Layout.alignment: Qt.AlignTop
+                                        Layout.topMargin: 7
+                                        implicitWidth: 6
+                                        implicitHeight: 6
+                                        radius: 3
+                                        color: Theme.palette.primary
+                                    }
+                                    LogosText {
+                                        Layout.fillWidth: true
+                                        text: parent.modelData
+                                        color: Theme.palette.textSecondary
+                                        font.pixelSize: Theme.typography.secondaryText
+                                        wrapMode: Text.Wrap
+                                    }
+                                }
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing.medium
+                            ActionButton {
+                                accent: true
+                                // If a wallet was already created this session (came
+                                // back from the phrase step), re-show it instead of
+                                // re-creating — never strands the user without their seed.
+                                text: root.lezBusy ? "Creating your wallet…" : (root.lezMnemonic.length > 0 ? "Resume setup" : "Create a new wallet")
+                                enabled: !root.lezBusy
+                                onClicked: root.onbPreview ? root.onbPreviewSeed() : (root.lezMnemonic.length > 0 ? (root.onbStep = 1) : root.onbCreate())
+                            }
+                            ActionButton {
+                                visible: root.lezMnemonic.length === 0
+                                text: "I already have a recovery phrase"
+                                enabled: !root.lezBusy
+                                onClicked: root.onbStep = 3
+                            }
+                            Item {
+                                Layout.fillWidth: true
+                            }
+                        }
+                        RowLayout {
+                            visible: root.lezBusy
+                            spacing: Theme.spacing.small
+                            LogosSpinner {
+                                running: parent.visible
+                                implicitWidth: 18
+                                implicitHeight: 18
+                                thickness: 2
+                                dotSize: 4
+                                ringColor: Theme.palette.primary
+                            }
+                            LogosText {
+                                text: "Setting things up — this takes a few seconds."
+                                color: Theme.palette.textTertiary
+                                font.pixelSize: Theme.typography.secondaryText
+                            }
+                        }
+                        Item {
+                            Layout.fillHeight: true
+                        }
+                    }
+                }
+                Item {
+                    implicitHeight: card1.implicitHeight
+                    Card {
+                        id: card1
+                        anchors.fill: parent
+                        Item {
+                            Layout.fillHeight: true
+                        }
+                        LogosText {
+                            text: "Your recovery phrase"
+                            color: Theme.palette.text
+                            font.pixelSize: Theme.typography.subtitleText
+                            font.weight: Theme.typography.weightBold
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true
+                            color: Theme.colors.getColor(Theme.palette.warning, 0.10)
+                            border.color: Theme.colors.getColor(Theme.palette.warning, 0.45)
+                            border.width: 1
+                            radius: Theme.spacing.radiusMedium
+                            implicitHeight: warnT.implicitHeight + Theme.spacing.medium * 2
+                            LogosText {
+                                id: warnT
+                                anchors {
+                                    left: parent.left
+                                    right: parent.right
+                                    verticalCenter: parent.verticalCenter
+                                    margins: Theme.spacing.medium
+                                }
+                                wrapMode: Text.Wrap
+                                text: "⚠ The only way to recover your wallet. Write them down in order, keep them offline, and never share them."
+                                color: Theme.palette.warning
+                                font.pixelSize: Theme.typography.secondaryText
+                            }
+                        }
+                        Flow {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing.small
+                            Repeater {
+                                model: root.lezMnemonic.trim().length > 0 ? root.lezMnemonic.trim().split(/\s+/) : []
+                                delegate: Rectangle {
+                                    radius: Theme.spacing.radiusMedium
+                                    color: Theme.palette.backgroundTertiary
+                                    border.width: 1
+                                    border.color: Theme.palette.borderHairline
+                                    implicitWidth: chipT.implicitWidth + 14
+                                    implicitHeight: 27
+                                    LogosText {
+                                        id: chipT
+                                        anchors.centerIn: parent
+                                        text: index + 1 + ". " + modelData
+                                        font.family: "Menlo"
+                                        font.pixelSize: 11
+                                        color: Theme.palette.text
+                                    }
+                                }
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing.small
+                            ActionButton {
+                                text: root.copied === "onbmn" ? "✓ Copied" : "Copy phrase"
+                                onClicked: root.copy(root.lezMnemonic, "onbmn")
+                            }
+                            Item {
+                                Layout.fillWidth: true
+                            }
+                        }
+                        LogosCheckbox {
+                            id: onbSavedBox
+                            text: "I've written these words down and stored them safely"
+                            onClicked: root.onbSaved = checked
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing.small
+                            ActionButton {
+                                text: "Back"
+                                onClicked: root.onbStep = 0
+                            }
+                            Item {
+                                Layout.fillWidth: true
+                            }
+                            ActionButton {
+                                accent: true
+                                text: "Continue"
+                                enabled: root.onbSaved
+                                onClicked: root.onbToVerify()
+                            }
+                        }
+                        Item {
+                            Layout.fillHeight: true
+                        }
+                    }
+                }
+                Item {
+                    implicitHeight: card2.implicitHeight
+                    Card {
+                        id: card2
+                        anchors.fill: parent
+                        Item {
+                            Layout.fillHeight: true
+                        }
+                        LogosText {
+                            text: "Confirm your recovery phrase"
+                            color: Theme.palette.text
+                            font.pixelSize: Theme.typography.subtitleText
+                            font.weight: Theme.typography.weightBold
+                        }
+                        LogosText {
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            color: Theme.palette.textSecondary
+                            font.pixelSize: Theme.typography.primaryText
+                            text: "Type the missing words to confirm you saved them."
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing.small
+                            FormLabel {
+                                text: "Word #" + (root.onbVerifyIdx.length > 0 ? root.onbVerifyIdx[0] + 1 : "")
+                            }
+                            LogosTextField {
+                                id: vfA
+                                Layout.fillWidth: true
+                                placeholderText: "…"
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing.small
+                            FormLabel {
+                                text: "Word #" + (root.onbVerifyIdx.length > 1 ? root.onbVerifyIdx[1] + 1 : "")
+                            }
+                            LogosTextField {
+                                id: vfB
+                                Layout.fillWidth: true
+                                placeholderText: "…"
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing.small
+                            FormLabel {
+                                text: "Word #" + (root.onbVerifyIdx.length > 2 ? root.onbVerifyIdx[2] + 1 : "")
+                            }
+                            LogosTextField {
+                                id: vfC
+                                Layout.fillWidth: true
+                                placeholderText: "…"
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing.small
+                            ActionButton {
+                                text: "Back"
+                                onClicked: root.onbStep = 1
+                            }
+                            Item {
+                                Layout.fillWidth: true
+                            }
+                            ActionButton {
+                                accent: true
+                                text: "Finish setup"
+                                enabled: root.onbPreview || root.onbVerifyOk([vfA.text, vfB.text, vfC.text])
+                                onClicked: root.onbFinish()
+                            }
+                        }
+                        Item {
+                            Layout.fillHeight: true
+                        }
+                    }
+                }
+            }
+
+            // ── Restore — separate side-path (reached from welcome) ──
+            Card {
+                visible: root.onbStep === 3
+                LogosText {
+                    text: "Restore your wallet"
+                    color: Theme.palette.text
+                    font.pixelSize: Theme.typography.subtitleText
+                    font.weight: Theme.typography.weightBold
+                }
+                LogosText {
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    color: Theme.palette.textSecondary
+                    font.pixelSize: Theme.typography.primaryText
+                    text: "Enter your 12 or 24-word recovery phrase, separated by spaces."
+                }
+                LogosTextArea {
+                    id: onbImportField
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 96
+                    placeholderText: "word one  word two  word three  …"
+                    enabled: !root.lezBusy
+                }
+                LogosText {
+                    visible: root.lastError.length > 0
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                    text: "Couldn't restore: " + root.lastError
+                    color: Theme.palette.error
+                    font.pixelSize: Theme.typography.secondaryText
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacing.small
+                    ActionButton {
+                        text: "Back"
+                        enabled: !root.lezBusy
+                        onClicked: root.onbStep = 0
+                    }
+                    Item {
+                        Layout.fillWidth: true
+                    }
+                    ActionButton {
+                        accent: true
+                        text: root.lezBusy ? "Restoring…" : "Restore wallet"
+                        enabled: root.onbPreview || (!root.lezBusy && (onbImportField.text.trim().split(/\s+/).length === 12 || onbImportField.text.trim().split(/\s+/).length === 24))
+                        onClicked: root.onbPreview ? root.onbFinish() : root.lezRestoreWallet(onbImportField.text)
+                    }
+                }
+            }
+        }
+    }
+
     // ── BASE CHAIN TAB ───────────────────────────────────────────────
     Component {
         id: bedrockTab
@@ -1347,6 +2461,15 @@ Rectangle {
             height: parent ? parent.height : root.height
             spacing: Theme.spacing.large
             readonly property bool wide: width >= 900
+            // gentle fade-in each time this tab is shown
+            opacity: 0
+            Component.onCompleted: opacity = 1
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 220
+                    easing.type: Easing.OutCubic
+                }
+            }
 
             // Center onboarding/starting content vertically until the main
             // grid (which fills the viewport) takes over.
@@ -1355,9 +2478,32 @@ Rectangle {
                 Layout.fillHeight: true
             }
 
+            // Before the first status reply, show a neutral placeholder — never
+            // the welcome card — so an already-running node doesn't flash it.
+            Card {
+                visible: !root.baseStatusKnown && root.nodeStatus !== 3
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.spacing.medium
+                    LogosSpinner {
+                        running: true
+                        implicitWidth: 20
+                        implicitHeight: 20
+                        thickness: 2
+                        dotSize: 4
+                        ringColor: Theme.palette.primary
+                    }
+                    LogosText {
+                        text: "Checking your node…"
+                        color: Theme.palette.textSecondary
+                        font.pixelSize: Theme.typography.primaryText
+                    }
+                }
+            }
+
             // Welcome / start node — shown until the node is running
             Card {
-                visible: root.nodeStatus === 0
+                visible: root.nodeStatus === 0 && root.baseStatusKnown
                 glow: true
                 LogosText {
                     text: "Welcome to your wallet"
@@ -1448,6 +2594,18 @@ Rectangle {
                         LogosMenu {
                             id: nodeMenu
                             LogosMenuItem {
+                                text: "Recent blocks"
+                                onTriggered: {
+                                    blocksOverlay.open();
+                                    root.loadRecentBlocks();
+                                }
+                            }
+                            LogosMenuItem {
+                                text: "Node info"
+                                onTriggered: nodeInfoOverlay.open()
+                            }
+                            LogosMenuSeparator {}
+                            LogosMenuItem {
                                 text: "Stop node"
                                 onTriggered: root.stopNode()
                             }
@@ -1524,6 +2682,29 @@ Rectangle {
                         }
                         ListView {
                             id: baseAcctList
+                            add: Transition {
+                                NumberAnimation {
+                                    property: "opacity"
+                                    from: 0
+                                    to: 1
+                                    duration: 220
+                                    easing.type: Easing.OutCubic
+                                }
+                            }
+                            displaced: Transition {
+                                NumberAnimation {
+                                    properties: "x,y"
+                                    duration: 200
+                                    easing.type: Easing.OutCubic
+                                }
+                            }
+                            remove: Transition {
+                                NumberAnimation {
+                                    property: "opacity"
+                                    to: 0
+                                    duration: 150
+                                }
+                            }
                             visible: root.baseAccountsLoaded
                             Layout.fillWidth: true
                             Layout.fillHeight: true
@@ -1574,13 +2755,18 @@ Rectangle {
                                         text: "Main"
                                         color: Theme.palette.primary
                                     }
+                                    LogosText {
+                                        visible: modelData.role !== "LeaderFunding"
+                                        text: root.baseRoleInfo(modelData.role).name
+                                        color: Theme.palette.textSecondary
+                                        font.pixelSize: 11
+                                        font.weight: Theme.typography.weightMedium
+                                    }
+                                    InfoTip {
+                                        tip: root.baseRoleInfo(modelData.role).desc
+                                    }
                                     Mono {
                                         text: root.shortHex(modelData.address)
-                                    }
-                                    LogosText {
-                                        text: modelData.role === "LeaderFunding" ? "for spending" : "for rewards"
-                                        color: Theme.palette.textTertiary
-                                        font.pixelSize: 11
                                     }
                                     MiniButton {
                                         label: root.copied === modelData.address ? "✓ Copied" : "Copy"
@@ -1627,9 +2813,61 @@ Rectangle {
 
                     // Send
                     Card {
+                        id: baseSendCard
                         visible: root.nodeStatus === 3
                         title: "Send"
-                        tip: "Base-chain transfers are public — anyone can look them up. For hidden payments, use the Private (LEZ) tab."
+                        tip: "Base-chain transfers are public — anyone can look them up. For hidden payments, use the LEZ (Zone) tab."
+
+                        // selected paying account (or null) + its balance
+                        property var fromAcct: (baseFromBox.currentIndex >= 0 && root.baseAccounts.length > baseFromBox.currentIndex) ? root.baseAccounts[baseFromBox.currentIndex] : null
+                        property string fromAddr: fromAcct ? String(fromAcct.address) : ""
+                        property double fromBal: fromAcct ? Number(fromAcct.balance) || 0 : 0
+                        property bool amtOver: Number(sendAmtField.text) > fromBal
+                        property bool fromSpendable: fromAcct ? root.baseRoleInfo(fromAcct.role).spendable : true
+
+                        // FROM — pick which account pays
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing.small
+                            FormLabel {
+                                text: "From"
+                            }
+                            LogosComboBox {
+                                id: baseFromBox
+                                objectName: "baseFromBox"
+                                Layout.fillWidth: true
+                                implicitHeight: 36
+                                enabled: !root.sendBusy && root.baseAccountsLoaded
+                                model: root.baseAccounts
+                                // ComboBox resets currentIndex to 0 whenever the
+                                // model is assigned and clobbers a currentIndex
+                                // binding, so default to Main explicitly (after
+                                // its internal reset) each time the set changes.
+                                function defaultToMain() {
+                                    if (count > 0)
+                                        currentIndex = root.baseMainIndex();
+                                }
+                                onModelChanged: Qt.callLater(defaultToMain)
+                                Component.onCompleted: defaultToMain()
+                                placeholderText: "No accounts yet"
+                                displayText: baseFromBox.currentIndex >= 0 ? root.baseFromLabel(root.baseAccounts[baseFromBox.currentIndex]) : ""
+                                delegate: ItemDelegate {
+                                    id: baseFromDelegate
+                                    width: baseFromBox.width
+                                    highlighted: baseFromBox.highlightedIndex === index
+                                    contentItem: LogosText {
+                                        text: root.baseFromLabel(modelData)
+                                        font.pixelSize: Theme.typography.secondaryText
+                                        color: Theme.palette.text
+                                        verticalAlignment: Text.AlignVCenter
+                                        elide: Text.ElideRight
+                                    }
+                                    background: Rectangle {
+                                        color: baseFromDelegate.highlighted ? Theme.palette.surface : "transparent"
+                                    }
+                                }
+                            }
+                        }
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: Theme.spacing.small
@@ -1652,6 +2890,7 @@ Rectangle {
                             }
                             LogosTextField {
                                 id: sendAmtField
+                                objectName: "sendAmtField"
                                 Layout.preferredWidth: 130
                                 placeholderText: "0"
                                 enabled: !root.sendBusy
@@ -1670,8 +2909,8 @@ Rectangle {
                             ActionButton {
                                 accent: true
                                 text: root.sendBusy ? "Sending…" : "Send"
-                                enabled: !root.sendBusy && /^[0-9a-fA-F]{64}$/.test(sendToField.text.trim()) && Number(sendAmtField.text) > 0
-                                onClicked: root.baseSend(sendToField.text.trim(), sendAmtField.text.trim())
+                                enabled: !root.sendBusy && baseSendCard.fromAddr.length === 64 && /^[0-9a-fA-F]{64}$/.test(sendToField.text.trim()) && Number(sendAmtField.text) > 0 && !baseSendCard.amtOver
+                                onClicked: root.baseSend(baseSendCard.fromAddr, sendToField.text.trim(), sendAmtField.text.trim())
                             }
                         }
                         LogosText {
@@ -1679,6 +2918,22 @@ Rectangle {
                             Layout.fillWidth: true
                             wrapMode: Text.Wrap
                             text: "That address doesn't look right — it should be exactly 64 letters (a–f) and numbers. Double-check what you pasted."
+                            color: Theme.palette.warning
+                            font.pixelSize: 11
+                        }
+                        LogosText {
+                            visible: baseSendCard.fromAcct !== null && baseSendCard.amtOver && Number(sendAmtField.text) > 0
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            text: baseSendCard.fromAcct ? "That's more than the " + root.baseRoleInfo(baseSendCard.fromAcct.role).name + " account holds (" + root.fmt(baseSendCard.fromBal) + "). Pick another account or lower the amount." : ""
+                            color: Theme.palette.warning
+                            font.pixelSize: 11
+                        }
+                        LogosText {
+                            visible: baseSendCard.fromAcct !== null && !baseSendCard.fromSpendable
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            text: baseSendCard.fromAcct ? "⚠ " + root.baseRoleInfo(baseSendCard.fromAcct.role).name + " is one of your node's protocol keys, not a spending wallet. " + root.baseRoleInfo(baseSendCard.fromAcct.role).desc + " Only send from it if you know exactly what you're doing — switch to Main above for normal payments." : ""
                             color: Theme.palette.warning
                             font.pixelSize: 11
                         }
@@ -1715,8 +2970,131 @@ Rectangle {
                             color: Theme.palette.success
                             font.pixelSize: Theme.typography.secondaryText
                         }
+                        Hairline {}
+                        // Recent inscriptions — anyone's text messages on-chain
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing.small
+                            LogosText {
+                                text: "Recent inscriptions"
+                                color: Theme.palette.textTertiary
+                                font.pixelSize: 10
+                                font.weight: Theme.typography.weightMedium
+                                font.letterSpacing: 0.8
+                                font.capitalization: Font.AllUppercase
+                            }
+                            InfoTip {
+                                tip: "Text messages inscribed onto the base chain by anyone running a node — read from recent blocks. The LEZ zone's own on-chain data is filtered out."
+                            }
+                            Item {
+                                Layout.fillWidth: true
+                            }
+                            MiniButton {
+                                label: root.inscFeedLoading ? "Loading…" : "Refresh"
+                                tip: "Re-scan recent blocks for new inscriptions."
+                                onClicked: root.loadInscFeed()
+                            }
+                        }
+                        ColumnLayout {
+                            visible: root.inscFeedLoading && root.inscFeed.length === 0
+                            Layout.fillWidth: true
+                            spacing: Theme.spacing.small
+                            SkeletonRow {}
+                            SkeletonRow {}
+                        }
+                        LogosText {
+                            visible: root.inscFeedLoaded && !root.inscFeedLoading && root.inscFeed.length === 0
+                            Layout.fillWidth: true
+                            wrapMode: Text.Wrap
+                            text: "No text inscriptions in recent blocks yet."
+                            color: Theme.palette.textTertiary
+                            font.pixelSize: Theme.typography.secondaryText
+                        }
+                        ListView {
+                            id: inscFeedList
+                            add: Transition {
+                                NumberAnimation {
+                                    property: "opacity"
+                                    from: 0
+                                    to: 1
+                                    duration: 220
+                                    easing.type: Easing.OutCubic
+                                }
+                            }
+                            displaced: Transition {
+                                NumberAnimation {
+                                    properties: "x,y"
+                                    duration: 200
+                                    easing.type: Easing.OutCubic
+                                }
+                            }
+                            remove: Transition {
+                                NumberAnimation {
+                                    property: "opacity"
+                                    to: 0
+                                    duration: 150
+                                }
+                            }
+                            visible: root.inscFeed.length > 0
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            Layout.minimumHeight: 60
+                            clip: true
+                            spacing: Theme.spacing.small
+                            boundsBehavior: Flickable.StopAtBounds
+                            ScrollBar.vertical: LogosScrollBar {
+                                parent: inscFeedList.parent
+                                anchors.top: inscFeedList.top
+                                anchors.bottom: inscFeedList.bottom
+                                anchors.left: inscFeedList.right
+                                anchors.leftMargin: 4
+                            }
+                            model: root.inscFeed
+                            delegate: Rectangle {
+                                width: ListView.view.width
+                                radius: Theme.spacing.radiusLarge
+                                color: Theme.palette.backgroundSecondary
+                                implicitHeight: inscRow.implicitHeight + Theme.spacing.medium * 2
+                                RowLayout {
+                                    id: inscRow
+                                    anchors {
+                                        left: parent.left
+                                        right: parent.right
+                                        verticalCenter: parent.verticalCenter
+                                        leftMargin: Theme.spacing.medium
+                                        rightMargin: Theme.spacing.medium
+                                    }
+                                    spacing: Theme.spacing.small
+                                    AccountAvatar {
+                                        seed: String(modelData.signer)
+                                        Layout.alignment: Qt.AlignTop
+                                    }
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 2
+                                        LogosText {
+                                            Layout.fillWidth: true
+                                            text: modelData.text
+                                            color: Theme.palette.text
+                                            font.pixelSize: Theme.typography.primaryText
+                                            wrapMode: Text.Wrap
+                                            maximumLineCount: 3
+                                            elide: Text.ElideRight
+                                        }
+                                        LogosText {
+                                            text: "by " + root.shortHex(String(modelData.signer)) + " · slot " + root.fmt(modelData.slot)
+                                            color: Theme.palette.textTertiary
+                                            font.pixelSize: 10
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Absorb slack in the loading/empty states so the card's
+                        // spacing matches the populated (list-fills-height) layout.
                         Item {
                             Layout.fillHeight: true
+                            visible: root.inscFeed.length === 0
                         }
                     }
                 }
@@ -1739,6 +3117,29 @@ Rectangle {
             height: parent ? parent.height : root.height
             spacing: Theme.spacing.large
             readonly property bool wide: width >= 900
+            // gentle fade-in each time this tab is shown
+            opacity: 0
+            Component.onCompleted: opacity = 1
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: 220
+                    easing.type: Easing.OutCubic
+                }
+            }
+
+            // Always-reachable settings row — the sequencer must be editable
+            // even when the wallet can't open (that's exactly when it's needed).
+            RowLayout {
+                Layout.fillWidth: true
+                Item {
+                    Layout.fillWidth: true
+                }
+                MiniButton {
+                    label: "⚙ Sequencer"
+                    tip: "Configure the LEZ sequencer URL this wallet connects to."
+                    onClicked: seqOverlay.open()
+                }
+            }
 
             // Center onboarding content vertically until the wallet is open
             // and the main grid (which fills the viewport) takes over.
@@ -1779,7 +3180,7 @@ Rectangle {
 
             // First run only — no wallet on disk yet, so offer to create one.
             Card {
-                visible: !root.lezReady && root.lezStatusKnown && !root.lezHasWallet
+                visible: !root.lezReady && root.lezStatusKnown && !root.lezHasWallet && !root.onbActive
                 glow: true
                 LogosText {
                     text: "A wallet nobody can spy on"
@@ -1835,7 +3236,7 @@ Rectangle {
             // Recovery phrase (first run) — numbered word chips
             Rectangle {
                 Layout.fillWidth: true
-                visible: root.lezMnemonic.length > 0
+                visible: root.lezMnemonic.length > 0 && !root.onbActive
                 color: Theme.colors.getColor(Theme.palette.warning, 0.08)
                 border.color: Theme.colors.getColor(Theme.palette.warning, 0.45)
                 border.width: 1
@@ -2031,6 +3432,29 @@ Rectangle {
                         }
                         ListView {
                             id: lezAcctList
+                            add: Transition {
+                                NumberAnimation {
+                                    property: "opacity"
+                                    from: 0
+                                    to: 1
+                                    duration: 220
+                                    easing.type: Easing.OutCubic
+                                }
+                            }
+                            displaced: Transition {
+                                NumberAnimation {
+                                    properties: "x,y"
+                                    duration: 200
+                                    easing.type: Easing.OutCubic
+                                }
+                            }
+                            remove: Transition {
+                                NumberAnimation {
+                                    property: "opacity"
+                                    to: 0
+                                    duration: 150
+                                }
+                            }
                             visible: root.lezAccountsLoaded
                             Layout.fillWidth: true
                             Layout.fillHeight: true
@@ -2378,7 +3802,7 @@ Rectangle {
                 Connections {
                     target: (typeof logos !== "undefined") ? logos : null
                     function onModuleEventReceived(m, e, d) {
-                        if (m !== "logos_wallet" || e !== "lezTransferFinished")
+                        if (m !== "persona_core" || e !== "lezTransferFinished")
                             return;
                         var rr;
                         try {

@@ -28,7 +28,7 @@ public:
     explicit LogosWalletPlugin(QObject* parent = nullptr);
     ~LogosWalletPlugin() override;
 
-    QString name() const override { return "logos_wallet"; }
+    QString name() const override { return "persona_core"; }
     QString version() const override { return "0.1.0"; }
 
     Q_INVOKABLE void initLogos(LogosAPI* api);
@@ -38,8 +38,11 @@ public:
     Q_INVOKABLE QString startNode() override;
     Q_INVOKABLE QString stopNode() override;
     Q_INVOKABLE QString baseAccounts() override;
-    Q_INVOKABLE QString baseSend(const QString& toAddress, const QString& amount) override;
+    Q_INVOKABLE QString baseSend(const QString& fromAddress, const QString& toAddress,
+                                 const QString& amount) override;
     Q_INVOKABLE QString inscribe(const QString& text) override;
+    Q_INVOKABLE QString recentInscriptions() override;
+    Q_INVOKABLE QString recentBlocks() override;
 
     // LEZ
     Q_INVOKABLE QString lezStatus() override;
@@ -54,6 +57,8 @@ public:
     Q_INVOKABLE QString lezClaimVault(const QString& amount) override;
     Q_INVOKABLE QString lezReset() override;
     Q_INVOKABLE QString lezRestore(const QString& mnemonic) override;
+    Q_INVOKABLE QString lezSequencer() override;
+    Q_INVOKABLE QString lezSetSequencer(const QString& url) override;
 
 signals:
     void eventResponse(const QString& eventName, const QVariantList& args);
@@ -66,6 +71,7 @@ private:
     QString nodeKeystorePath() const;
     QString nodePidPath() const;
     QString lezDir() const;
+    QString sequencerUrl() const;     // configured LEZ sequencer, or built-in default
 
     // ── Bedrock: node daemon ─────────────────────────────────────────
     bool    nodeAlive() const;        // HTTP API answers = a node is up

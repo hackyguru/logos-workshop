@@ -1,10 +1,10 @@
 {
-  "name": "logos_wallet",
+  "name": "persona_core",
   "version": "0.1.0",
   "type": "core",
   "category": "wallet",
-  "description": "Unified Bedrock (base chain) + LEZ (execution zone) wallet \u2014 node lifecycle, base transfers/inscriptions, and private LEZ payments",
-  "main": "logos_wallet_plugin",
+  "description": "Unified Bedrock (base chain) + LEZ (execution zone) wallet — node lifecycle, base transfers/inscriptions, and private LEZ payments",
+  "main": "persona_core_plugin",
   "dependencies": [],
   "nix": {
     "packages": {
